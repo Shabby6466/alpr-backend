@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Between, Like } from 'typeorm';
 import { DetectionEvent } from './detection-event.entity';
+import { normalizePlate } from '../common/plate.util';
 
 export interface CreateEventDto {
   plateText: string;
@@ -35,7 +36,7 @@ export class EventsService {
   }): Promise<[DetectionEvent[], number]> {
     const qb = this.repo.createQueryBuilder('e').orderBy('e.timestamp', 'DESC');
 
-    if (filters.plate) qb.andWhere('e.plateText LIKE :plate', { plate: `%${filters.plate.toUpperCase()}%` });
+    if (filters.plate) qb.andWhere('e.plateText LIKE :plate', { plate: `%${normalizePlate(filters.plate)}%` });
     if (filters.personId) qb.andWhere('e.personId = :personId', { personId: filters.personId });
     if (filters.startDate) qb.andWhere('e.timestamp >= :start', { start: new Date(filters.startDate) });
     if (filters.endDate) qb.andWhere('e.timestamp <= :end', { end: new Date(filters.endDate) });
@@ -44,11 +45,12 @@ export class EventsService {
     return qb.getManyAndCount();
   }
 
-  findByPerson(personId: string): Promise<DetectionEvent[]> {
+  findByPerson(personId: string, limit = 100, offset = 0): Promise<DetectionEvent[]> {
     return this.repo.find({
       where: { personId },
       order: { timestamp: 'DESC' },
-      take: 100,
+      take: limit,
+      skip: offset,
     });
   }
 

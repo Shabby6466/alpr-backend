@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { RocService } from '../roc/roc.service';
 import { EventsService } from '../events/events.service';
@@ -13,6 +13,8 @@ import * as http from 'http';
 
 @Injectable()
 export class AlprService {
+  private readonly logger = new Logger(AlprService.name);
+
   constructor(
     private readonly roc: RocService,
     private readonly eventsService: EventsService,
@@ -143,7 +145,9 @@ export class AlprService {
           try {
             const p = await this.personsService.findOne(r.personId);
             personName = p.name;
-          } catch (e) { }
+          } catch (e) {
+            this.logger.warn(`Could not resolve person name for id ${r.personId}: ${e.message}`);
+          }
         }
         const { template, ...faceRest } = r;
         return {
@@ -173,14 +177,49 @@ export class AlprService {
   }
 
   private fetchUrl(url: string): Promise<Buffer> {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new BadRequestException('Invalid URL');
+    }
+
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      throw new BadRequestException('Only HTTP/HTTPS URLs are allowed');
+    }
+
+    const hostname = parsed.hostname.toLowerCase();
+    const blocked = ['localhost', '0.0.0.0', '169.254.169.254', '100.100.100.200'];
+    if (
+      blocked.includes(hostname) ||
+      /^127\./.test(hostname) ||
+      /^10\./.test(hostname) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) ||
+      /^192\.168\./.test(hostname)
+    ) {
+      throw new BadRequestException('Private/loopback addresses are not allowed');
+    }
+
+    const maxBytes = (this.config.get<number>('upload.maxFileSizeMb') ?? 20) * 1024 * 1024;
+
     return new Promise((resolve, reject) => {
-      const client = url.startsWith('https') ? https : http;
-      client.get(url, (res) => {
+      const client = parsed.protocol === 'https:' ? https : http;
+      const req = client.get(url, { timeout: 30_000 }, (res) => {
         const chunks: Buffer[] = [];
-        res.on('data', (c) => chunks.push(c));
+        let total = 0;
+        res.on('data', (chunk: Buffer) => {
+          total += chunk.length;
+          if (total > maxBytes) {
+            req.destroy();
+            return reject(new BadRequestException(`Response exceeds ${maxBytes / 1024 / 1024}MB limit`));
+          }
+          chunks.push(chunk);
+        });
         res.on('end', () => resolve(Buffer.concat(chunks)));
         res.on('error', reject);
-      }).on('error', reject);
+      });
+      req.on('timeout', () => { req.destroy(); reject(new BadRequestException('URL fetch timed out')); });
+      req.on('error', reject);
     });
   }
 }

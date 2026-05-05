@@ -40,12 +40,12 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('docs', app, document);
 
-  const port = 3006;
-  await app.listen(port, '127.0.0.1');
+  const port = parseInt(process.env.PORT ?? '3006', 10);
+  const host = process.env.HOST ?? '127.0.0.1';
+  await app.listen(port, host);
 
-  logger.log(`Server running on http://localhost:${port}`);
-  logger.log(`Swagger docs at http://localhost:${port}/docs`);
-  logger.log(`ROC server: ${process.env.ROC_SERVER_URL || 'http://localhost:9000'}`);
+  logger.log(`Server running on http://${host}:${port}`);
+  logger.log(`Swagger docs at http://${host}:${port}/docs`);
 }
 
 bootstrap();

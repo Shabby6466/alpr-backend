@@ -296,7 +296,7 @@ export class RocService implements OnModuleInit, OnModuleDestroy {
     return {
       text,
       confidence: box.confidence ?? 0,
-      quality: box.confidence ?? 0,
+      quality: t.quality ?? box.confidence ?? 0,
       state,
       boundingBox: { x: box.x ?? 0, y: box.y ?? 0, width: box.width ?? 0, height: box.height ?? 0, rotation: box.rotation ?? 0 },
       thumbnail,
@@ -346,7 +346,7 @@ export class RocService implements OnModuleInit, OnModuleDestroy {
 
       return {
         confidence: box.confidence ?? 0,
-        quality: box.confidence ?? 0,
+        quality: t.quality ?? box.confidence ?? 0,
         boundingBox: { x: box.x ?? 0, y: box.y ?? 0, width: box.width ?? 0, height: box.height ?? 0, rotation: box.rotation ?? 0 },
         thumbnail: t.tn?.length > 0 ? Buffer.from(t.tn).toString('base64') : undefined,
         template: t.fv,

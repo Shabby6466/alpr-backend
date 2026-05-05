@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, Not, IsNull } from 'typeorm';
 import { Person } from './person.entity';
@@ -8,6 +8,8 @@ import { RocService } from '../roc/roc.service';
 
 @Injectable()
 export class PersonsService implements OnModuleInit {
+  private readonly logger = new Logger(PersonsService.name);
+
   constructor(
     @InjectRepository(Person)
     private readonly repo: Repository<Person>,
@@ -22,19 +24,19 @@ export class PersonsService implements OnModuleInit {
   async syncGallery() {
     try {
       const persons = await this.repo.find({ where: { faceTemplate: Not(IsNull()) } });
-      console.log(`[PersonsService] Syncing ${persons.length} persons with face templates to ROC gallery`);
+      this.logger.log(`Syncing ${persons.length} persons with face templates to ROC gallery`);
       await this.roc.clearGallery();
       for (const person of persons) {
         if (person.faceTemplate && person.faceTemplate.length > 512) {
-          console.log(`[PersonsService] Enrolling face for ${person.name} (${person.id})`);
+          this.logger.log(`Enrolling face for ${person.name} (${person.id})`);
           await this.roc.enrollFace(person.id, person.faceTemplate);
         } else if (person.faceTemplate) {
-          console.warn(`[PersonsService] Skipping ${person.name} — template too small (${person.faceTemplate.length} bytes), likely corrupt`);
+          this.logger.warn(`Skipping ${person.name} — template too small (${person.faceTemplate.length} bytes), likely corrupt`);
         }
       }
-      console.log(`[PersonsService] Gallery sync complete`);
+      this.logger.log('Gallery sync complete');
     } catch (err) {
-      console.error(`[PersonsService] Gallery sync failed:`, err);
+      this.logger.error('Gallery sync failed', err?.message);
     }
   }
 

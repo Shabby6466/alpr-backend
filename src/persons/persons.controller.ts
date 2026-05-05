@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, UseInterceptors, UploadedFile, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Put, Delete, Body, Param, Query, UseInterceptors, UploadedFile, BadRequestException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { PersonsService } from './persons.service';
@@ -29,10 +29,14 @@ export class PersonsController {
 
   @Get(':id')
   @ApiOperation({ summary: 'Get person with their visit history' })
-  async findOne(@Param('id') id: string) {
+  async findOne(
+    @Param('id') id: string,
+    @Query('visitLimit') visitLimit?: string,
+    @Query('visitOffset') visitOffset?: string,
+  ) {
     const [person, visits] = await Promise.all([
       this.persons.findOne(id),
-      this.events.findByPerson(id),
+      this.events.findByPerson(id, parseInt(visitLimit ?? '100', 10), parseInt(visitOffset ?? '0', 10)),
     ]);
     return { ...person, visits };
   }
