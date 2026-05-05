@@ -1,0 +1,78 @@
+import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { WatchlistEntry } from './watchlist.entity';
+import { Alert } from './alert.entity';
+import { CreateWatchlistDto, UpdateWatchlistDto } from './dto/watchlist.dto';
+import { normalizePlate } from '../common/plate.util';
+import { NotificationsService } from '../notifications/notifications.service';
+
+@Injectable()
+export class WatchlistService {
+  constructor(
+    @InjectRepository(WatchlistEntry)
+    private readonly watchlistRepo: Repository<WatchlistEntry>,
+    @InjectRepository(Alert)
+    private readonly alertRepo: Repository<Alert>,
+    private readonly notifications: NotificationsService,
+  ) {}
+
+  async create(dto: CreateWatchlistDto): Promise<WatchlistEntry> {
+    const normalized = normalizePlate(dto.plateText);
+    const existing = await this.watchlistRepo.findOne({ where: { plateText: normalized } });
+    if (existing) throw new ConflictException(`Plate ${normalized} is already on the watchlist`);
+    const entry = this.watchlistRepo.create({ ...dto, plateText: normalized });
+    return this.watchlistRepo.save(entry);
+  }
+
+  findAll(activeOnly?: boolean): Promise<WatchlistEntry[]> {
+    const where = activeOnly ? { active: true } : {};
+    return this.watchlistRepo.find({ where, order: { createdAt: 'DESC' } });
+  }
+
+  async update(id: string, dto: UpdateWatchlistDto): Promise<WatchlistEntry> {
+    const entry = await this.watchlistRepo.findOne({ where: { id } });
+    if (!entry) throw new NotFoundException(`Watchlist entry ${id} not found`);
+    Object.assign(entry, dto);
+    return this.watchlistRepo.save(entry);
+  }
+
+  async remove(id: string) {
+    const entry = await this.watchlistRepo.findOne({ where: { id } });
+    if (!entry) throw new NotFoundException(`Watchlist entry ${id} not found`);
+    return this.watchlistRepo.remove(entry);
+  }
+
+  async checkAndAlert(plateText: string, detectionEventId: string, thumbnailBase64?: string): Promise<Alert | null> {
+    const normalized = normalizePlate(plateText);
+    const entry = await this.watchlistRepo.findOne({ where: { plateText: normalized, active: true } });
+    if (!entry) return null;
+
+    const alert = this.alertRepo.create({
+      plateText: normalized,
+      watchlistEntryId: entry.id,
+      detectionEventId,
+      reason: entry.reason,
+      thumbnailBase64,
+    });
+    const saved = await this.alertRepo.save(alert);
+    this.notifications.emitAlert(saved);
+    return saved;
+  }
+
+  getAlerts(acknowledged?: boolean): Promise<Alert[]> {
+    const where = acknowledged !== undefined ? { acknowledged } : {};
+    return this.alertRepo.find({ where, order: { timestamp: 'DESC' } });
+  }
+
+  async acknowledgeAlert(id: string): Promise<Alert> {
+    const alert = await this.alertRepo.findOne({ where: { id } });
+    if (!alert) throw new NotFoundException(`Alert ${id} not found`);
+    alert.acknowledged = true;
+    return this.alertRepo.save(alert);
+  }
+
+  deleteAlert(id: string) {
+    return this.alertRepo.delete(id);
+  }
+}

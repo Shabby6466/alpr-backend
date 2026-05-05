@@ -1,0 +1,27 @@
+{
+    "hostid": [
+        "0a:56:62:79:b7:b5",
+        "0e:12:a8:5f:32:0b",
+        "26:6a:5e:b4:49:c6",
+        "26:6a:5e:b4:49:c7",
+        "26:6a:5e:b4:49:e6",
+        "26:6a:5e:b4:49:e7",
+        "36:fa:38:47:ce:80",
+        "36:fa:38:47:ce:84",
+        "ca:a4:19:f6:de:7b"
+    ],
+    "hostname": "Shoaib-MacBook-Pro.local",
+    "name": [
+        "en0*",
+        "ap1*",
+        "en3*",
+        "en4*",
+        "anpi0*",
+        "anpi1*",
+        "bridge0*",
+        "en2*",
+        "llw0*"
+    ],
+    "os": "Mac OS",
+    "version": "3.14.2"
+}

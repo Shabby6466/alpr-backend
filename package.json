@@ -1,0 +1,45 @@
+{
+  "name": "alpr-api",
+  "version": "1.0.0",
+  "description": "ALPR (Automatic License Plate Recognition) API using ROC SDK and NestJS",
+  "scripts": {
+    "build": "nest build",
+    "start": "DYLD_LIBRARY_PATH=/Users/Akmal/Desktop/projects/terarare/roc-web/alpr-api/lib:/Volumes/ROCSDK/lib nest start",
+    "start:dev": "DYLD_LIBRARY_PATH=/Users/Akmal/Desktop/projects/terarare/roc-web/alpr-api/lib:/Volumes/ROCSDK/lib nest start --watch",
+    "start:debug": "DYLD_LIBRARY_PATH=/Users/Akmal/Desktop/projects/terarare/roc-web/alpr-api/lib:/Volumes/ROCSDK/lib nest start --debug --watch",
+    "start:prod": "DYLD_LIBRARY_PATH=/Users/Akmal/Desktop/projects/terarare/roc-web/alpr-api/lib:/Volumes/ROCSDK/lib node dist/main",
+    "mock:roc": "ts-node mock-roc-server.ts",
+    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\"",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@nestjs/common": "^10.0.0",
+    "@nestjs/config": "^3.0.0",
+    "@nestjs/core": "^10.0.0",
+    "@nestjs/event-emitter": "^3.1.0",
+    "@nestjs/platform-express": "^10.0.0",
+    "@nestjs/swagger": "^7.0.0",
+    "@nestjs/typeorm": "^11.0.1",
+    "@protobuf-ts/runtime": "^2.9.4",
+    "axios": "^1.6.0",
+    "better-sqlite3": "^12.9.0",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.0",
+    "dotenv": "^17.4.2",
+    "multer": "^1.4.5-lts.1",
+    "reflect-metadata": "^0.1.13",
+    "rxjs": "^7.8.1",
+    "swagger-ui-express": "^5.0.0",
+    "typeorm": "^0.3.28"
+  },
+  "devDependencies": {
+    "@nestjs/cli": "^10.0.0",
+    "@nestjs/schematics": "^11.1.0",
+    "@nestjs/testing": "^10.0.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/multer": "^1.4.11",
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.0.0"
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "vendor": "Rank One Computing",
+  "license": {
+    "product": "ROC SDK",
+    "version": "3.14",
+    "expiry": "2026-06-15",
+    "hostid": [
+      "0c609475619f7aa58f4b0ff6af1da4693598fdab00df256d39df5841395915ee",
+      "8a92daf55d110143354d50625a202e6ef966589a0712a34c0d7dbe7dd3931706",
+      "a2dff010baa976f8e90885ce265f13a2bd0229c9655167b82ea50a702fde1ccc"
+    ],
+    "salt": "2013d7cd0cdda18b0694e755b6fd74cdc28930b3d1be21fd10dd0bc3189e66cc",
+    "os": "Mac OS",
+    "customer": "Reliance Corp",
+    "userdata": {
+            "account": "RankOne",
+            "face": true,
+            "fingerprint": true,
+            "gpus": 1,
+            "grade": "evaluation",
+            "gun": true,
+            "hostid": "[36:fa:38:47:ce:84, 4e:db:1c:34:44:99, fe:be:85:14:3f:0c]",
+            "icao": true,
+            "iris": true,
+            "liveness": true,
+            "logging": false,
+            "lpr": true,
+            "object": true,
+            "ocr": true,
+            "person": true,
+            "templates": 1000000,
+            "threads": 16
+        },
+    "minversion": "1.13",
+    "signature": "3040021e084c50fb80197b765fdfa97a221f515029fafd6a2d1258b54d624f91fcf0021e0f46636bb9ac8747106b5b6076e5dd8f83248315418525a2439b898c9112"
+  }
+}
