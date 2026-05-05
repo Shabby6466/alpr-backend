@@ -349,7 +349,7 @@ export class RocService implements OnModuleInit, OnModuleDestroy {
         quality: t.quality ?? box.confidence ?? 0,
         boundingBox: { x: box.x ?? 0, y: box.y ?? 0, width: box.width ?? 0, height: box.height ?? 0, rotation: box.rotation ?? 0 },
         thumbnail: t.tn?.length > 0 ? Buffer.from(t.tn).toString('base64') : undefined,
-        template: t.fv,
+        template: t.template || t.fv,
         personId: best?.similarity > 0.5 ? roc.roc_uuid_to_string(best.person_id, false) : undefined,
         similarity: best?.similarity,
       };
@@ -360,6 +360,10 @@ export class RocService implements OnModuleInit, OnModuleDestroy {
 
   // Used at enroll time: native template straight from roc_represent_face
   async enrollFaceNative(personId: string, nativeTemplate: any) {
+    if (!nativeTemplate) {
+      this.logger.error(`Cannot enroll null template for person ${personId}`);
+      return;
+    }
     await this.ensureInitialized();
     nativeTemplate.person_id = `{${personId}}`;
     try {
@@ -373,6 +377,10 @@ export class RocService implements OnModuleInit, OnModuleDestroy {
 
   // Used at startup gallery sync: re-enroll from stored serialized template
   async enrollFace(personId: string, storedBuffer: Buffer) {
+    if (!storedBuffer) {
+      this.logger.error(`Cannot enroll null stored template for person ${personId}`);
+      return;
+    }
     await this.ensureInitialized();
     this.logger.debug(`Re-enrolling person ${personId} (stored size: ${storedBuffer.length})`);
     try {
