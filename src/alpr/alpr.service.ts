@@ -7,13 +7,22 @@ import { WatchlistService } from '../watchlist/watchlist.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { DetectPlateDto, DetectPlateFromUrlDto } from './dto/detect-plate.dto';
 import { AlprResultDto, PlateDto, HealthDto, CombinedResultDto } from './dto/plate-result.dto';
-import { normalizePlate } from '../common/plate.util';
+import { normalizePlate, isValidPakistaniPlate } from '../common/plate.util';
+import { PlateTracker } from '../common/plate-tracker';
 import * as https from 'https';
 import * as http from 'http';
+
+/** Plate bounding box must be at least this wide (pixels) before OCR is trusted. */
+const MIN_PLATE_PX_WIDTH = 60;
+
+/** How long (ms) to suppress re-logging a plate that was just committed. */
+const PLATE_COOLDOWN_MS = 30_000;
 
 @Injectable()
 export class AlprService {
   private readonly logger = new Logger(AlprService.name);
+  private readonly tracker = new PlateTracker(5_000, 2);
+  private readonly recentlyLogged = new Map<string, number>(); // plateText → timestamp
 
   constructor(
     private readonly roc: RocService,
@@ -51,13 +60,17 @@ export class AlprService {
   ): AsyncGenerator<CombinedResultDto> {
     if (!file) throw new BadRequestException('No video file provided');
 
-    for await (const result of this.roc.detectVideoFrames(
-      file.buffer,
-      params,
-      params.frameStep ?? 15,
-      file.originalname
-    )) {
-      yield* this.processCombinedFrame(result);
+    try {
+      for await (const result of this.roc.detectVideoFrames(
+        file.buffer,
+        params,
+        params.frameStep ?? 15,
+        file.originalname,
+      )) {
+        yield* this.processCombinedFrame(result);
+      }
+    } finally {
+      await this.flushTracker('video');
     }
   }
 
@@ -67,12 +80,16 @@ export class AlprService {
   ): AsyncGenerator<CombinedResultDto> {
     if (!url) throw new BadRequestException('No stream URL provided');
 
-    for await (const result of this.roc.detectStreamFrames(
-      url,
-      params,
-      params.frameStep ?? 5,
-    )) {
-      yield* this.processCombinedFrame(result);
+    try {
+      for await (const result of this.roc.detectStreamFrames(
+        url,
+        params,
+        params.frameStep ?? 5,
+      )) {
+        yield* this.processCombinedFrame(result);
+      }
+    } finally {
+      await this.flushTracker('stream');
     }
   }
 
@@ -80,20 +97,61 @@ export class AlprService {
     result: any,
   ): AsyncGenerator<CombinedResultDto> {
     const start = Date.now();
+
+    // Pre-filter raw plates before enrichment: skip tiny/distant plates and regex failures
+    const filteredRaw = result.plates.filter((r: any) => this.passesPreFilters(r));
+
     const [plates, faces] = await Promise.all([
-      this.enrichPlates(result.plates),
+      this.enrichPlates(filteredRaw),
       this.enrichFaces(result.faces),
     ]);
 
-    for (const plate of plates) await this.logAndAlert(plate, 'video');
-    // Faces are identified but not logged as "events" yet (unless we want to log face events too)
+    // Feed filtered plates into the tracker; log sessions that have just expired
+    for (const plate of plates) {
+      const committed = this.tracker.observe(plate);
+      for (const winner of committed) await this.logCommitted(winner, 'video');
+    }
 
     yield {
       frameIndex: result.frameIndex,
       plates,
       faces,
-      processingTimeMs: result.processingTimeMs + (Date.now() - start)
+      processingTimeMs: result.processingTimeMs + (Date.now() - start),
     };
+  }
+
+  /** Flush remaining open sessions when a video stream ends. */
+  private async flushTracker(source: 'video' | 'stream') {
+    for (const winner of this.tracker.flushAll()) {
+      await this.logCommitted(winner, source);
+    }
+  }
+
+  /**
+   * Log a committed (voted) plate to the DB and fire SSE/watchlist alerts.
+   * Suppressed if the same plate was logged within PLATE_COOLDOWN_MS.
+   */
+  private async logCommitted(plate: PlateDto, source: 'video' | 'stream') {
+    const now = Date.now();
+    const last = this.recentlyLogged.get(plate.text);
+    if (last !== undefined && now - last < PLATE_COOLDOWN_MS) return;
+
+    this.recentlyLogged.set(plate.text, now);
+    // Evict stale cooldown entries to avoid memory growth on long-running streams
+    if (this.recentlyLogged.size > 500) {
+      for (const [k, t] of this.recentlyLogged) {
+        if (now - t > PLATE_COOLDOWN_MS) this.recentlyLogged.delete(k);
+      }
+    }
+
+    await this.logAndAlert(plate, source);
+  }
+
+  /** True when the raw plate result is worth processing further. */
+  private passesPreFilters(raw: any): boolean {
+    if ((raw.boundingBox?.width ?? 0) < MIN_PLATE_PX_WIDTH) return false;
+    const normalized = normalizePlate(raw.text ?? '');
+    return isValidPakistaniPlate(normalized);
   }
 
   health(): HealthDto {
@@ -158,7 +216,7 @@ export class AlprService {
     );
   }
 
-  private async logAndAlert(plate: PlateDto, source: 'image' | 'video') {
+  private async logAndAlert(plate: PlateDto, source: 'image' | 'video' | 'stream') {
     const event = await this.eventsService.create({
       plateText: plate.text,
       confidence: plate.confidence,

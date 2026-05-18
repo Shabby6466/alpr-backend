@@ -54,6 +54,43 @@ export class EventsService {
     });
   }
 
+  async getStats(days = 7) {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+
+    const qb = this.repo.createQueryBuilder('e')
+      .select("strftime('%Y-%m-%d %H:00:00', e.timestamp)", 'hour')
+      .addSelect('COUNT(*)', 'count')
+      .where('e.timestamp >= :start', { start: startDate })
+      .groupBy('hour')
+      .orderBy('hour', 'ASC');
+
+    const raw = await qb.getRawMany();
+    return raw.map(r => ({ time: r.hour, count: parseInt(r.count, 10) }));
+  }
+
+  async getTopPlates(limit = 10) {
+    return this.repo.createQueryBuilder('e')
+      .select('e.plateText', 'plate')
+      .addSelect('COUNT(*)', 'count')
+      .groupBy('e.plateText')
+      .orderBy('count', 'DESC')
+      .limit(limit)
+      .getRawMany();
+  }
+
+  async getTopPersons(limit = 10) {
+    return this.repo.createQueryBuilder('e')
+      .select('e.personName', 'name')
+      .addSelect('e.personId', 'id')
+      .addSelect('COUNT(*)', 'count')
+      .where('e.personId IS NOT NULL')
+      .groupBy('e.personId')
+      .orderBy('count', 'DESC')
+      .limit(limit)
+      .getRawMany();
+  }
+
   delete(id: string) {
     return this.repo.delete(id);
   }

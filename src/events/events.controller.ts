@@ -33,6 +33,24 @@ export class EventsController {
     );
   }
 
+  @Get('stats')
+  @ApiOperation({ summary: 'Get detection statistics for reporting' })
+  getStats(@Query('days') days?: string) {
+    return this.events.getStats(days ? parseInt(days, 10) : 7);
+  }
+
+  @Get('top-plates')
+  @ApiOperation({ summary: 'Get most frequent license plates' })
+  getTopPlates(@Query('limit') limit?: string) {
+    return this.events.getTopPlates(limit ? parseInt(limit, 10) : 10);
+  }
+
+  @Get('top-persons')
+  @ApiOperation({ summary: 'Get most frequent identified persons' })
+  getTopPersons(@Query('limit') limit?: string) {
+    return this.events.getTopPersons(limit ? parseInt(limit, 10) : 10);
+  }
+
   @Delete(':id')
   @ApiOperation({ summary: 'Delete a detection event' })
   delete(@Param('id') id: string) {

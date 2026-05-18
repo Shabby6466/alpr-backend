@@ -6,12 +6,18 @@ import { NestFactory, Reflector } from '@nestjs/core';
 import { ValidationPipe, Logger, ClassSerializerInterceptor } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { json, urlencoded } from 'express';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   const logger = new Logger('Bootstrap');
   
   app.useGlobalInterceptors(new ClassSerializerInterceptor(app.get(Reflector)));
+  
+  // Increase body size limit for large uploads (videos/images)
+  app.use(json({ limit: '50mb' }));
+  app.use(urlencoded({ limit: '50mb', extended: true }));
+
   console.log(`DYLD_LIBRARY_PATH: ${process.env.DYLD_LIBRARY_PATH}`);
 
   // Global validation
