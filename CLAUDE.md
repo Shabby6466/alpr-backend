@@ -1,6 +1,6 @@
 # ALPR API — AI Context
 
-NestJS REST API that wraps the ROC SDK native Node.js addon to perform Automatic License Plate Recognition (ALPR). Persists detection events, persons, watchlist entries, and alerts to SQLite via TypeORM.
+NestJS REST API that wraps the ROC SDK native Node.js addon to perform Automatic License Plate Recognition (ALPR). Persists detection events, persons, watchlist entries, alerts, face events, and cameras to SQLite via TypeORM.
 
 ## Stack
 
@@ -18,9 +18,7 @@ NestJS REST API that wraps the ROC SDK native Node.js addon to perform Automatic
 
 ```bash
 # SDK volume must be mounted first — double-click the .dmg at /Volumes/ROCSDK
-DYLD_LIBRARY_PATH=/Volumes/ROCSDK/lib nest start --watch
-# All npm scripts already prepend DYLD_LIBRARY_PATH — so just:
-npm run start:dev
+npm run start:dev   # DYLD_LIBRARY_PATH is prepended by the npm script
 ```
 
 The `DYLD_LIBRARY_PATH` prefix is **mandatory** on macOS so that `roc.node` can find `libroc.3.14.dylib` at runtime. Without it the process crashes immediately with `dlopen` errors.
@@ -28,65 +26,91 @@ The `DYLD_LIBRARY_PATH` prefix is **mandatory** on macOS so that `roc.node` can 
 ## Environment (.env)
 
 ```
-ROC_MODEL_PATH=/Volumes/ROCSDK/lib   # directory containing *.rmodel files
-ROC_LIC=/Users/Akmal/Downloads/Lic-files/ROC-RC-MACOS.lic
 PORT=3000
 API_PREFIX=api
+ROC_MODEL_PATH=/Volumes/ROCSDK/lib
+ROC_LIC=/Users/Akmal/Downloads/Lic-files/ROC-RC-MACOS.lic
 MAX_FILE_SIZE_MB=20
+API_KEYS=                    # empty = auth disabled
+RETENTION_DAYS=90
+ENABLE_OBJECT_DETECTION=true
+ENABLE_GUN_DETECTION=true
+PERSIST_FACE_EVENTS=true
 ```
+
+See `.env.example` for full documentation of every variable.
 
 ## ROC SDK — Critical Details
 
-- **Addon file**: `roc.node` lives at the project root (not inside `src/`). It was copied from `/Volumes/ROCSDK/nodejs/roc.node` and patched: `install_name_tool -add_rpath /Volumes/ROCSDK/lib roc.node` then re-signed with `codesign --sign - --force roc.node`. Without the rpath patch it cannot find the dylib.
-- **Load path**: always `require(path.resolve(process.cwd(), 'roc.node'))`. Using `__dirname` breaks in compiled code because `dist/src/roc/` is not the project root.
-- **No `roc_read_image_buffer`**: the SDK only exposes `roc_read_image(filePath, colorSpace)`. To process a `Buffer`, write it to a temp file in `os.tmpdir()`, call `roc_read_image`, then delete the file in `finally`.
-- **Lifecycle**: `roc_initialize(null)` and `roc_set_model_path(modelPath)` are called in `onModuleInit`. `roc_finalize()` is called in `onModuleDestroy`.
-- **Video/Streams**: `roc_open_video(filePathOrUrl, colorSpace)` → loop `roc_read_frame(video)` until it returns falsy. Same temp-file pattern for uploads, but supports direct URLs (RTSP/HTTP) for live feeds. The temp file is written with the **original file extension** (e.g. `.mov`) so the SDK picks the right FFmpeg demuxer.
-- **`roc_video` plugin**: The SDK lazy-loads `libroc_video` via `dlopen("roc_video", ...)` using a bare name (no `lib` prefix, no `.dylib`). Because `/Volumes/ROCSDK` is a read-only DMG, a symlink `lib/roc_video → /Volumes/ROCSDK/lib/libroc_video.dylib` lives in the project root `lib/` directory, and `DYLD_LIBRARY_PATH` includes `./lib` so dlopen finds it.
-- **Frame skipping**: configurable via `frameStep` param (default 15 for files, 5 for live streams).
-- **Quality Tuning**: Default `minQuality` lowered to **0.2** for better detection on mobile/grainy video feeds.
-- **Stream Robustness**:
-  - **Timestamp Fix**: Network streams (RTSP/HTTP) automatically have `?system_timestamps=true` appended to avoid RTCP sender report errors.
-  - **Frame Validation**: Frames are validated for pixel data (`frame.data`) before processing; "Null image data" errors are caught and skipped to prevent stream interruption.
-- **roc-serve is NOT used**. The `ROC-RC-MACOS.lic` license type forces roc-serve into floating-license-server mode — it cannot process detection requests. All detection goes through the native addon directly.
+- **Addon file**: `roc.node` lives at the project root. Patched with `install_name_tool -add_rpath /Volumes/ROCSDK/lib roc.node` and re-signed with `codesign --sign - --force roc.node`.
+- **Load path**: always `require(path.resolve(process.cwd(), 'roc.node'))`. Using `__dirname` breaks in compiled code.
+- **No `roc_read_image_buffer`**: write buffer to `os.tmpdir()`, call `roc_read_image(tmpPath)`, delete in `finally`.
+- **Lifecycle**: `roc_initialize(null)` + `roc_set_model_path()` in `onModuleInit`. `roc_finalize()` in `onModuleDestroy`.
+- **Video/Streams**: `roc_open_video(filePathOrUrl)` → loop `roc_read_frame(video)` until `!frame || !frame.data`. Temp files use the **original extension** so FFmpeg picks the right demuxer.
+- **`roc_video` plugin**: SDK lazy-loads it via `dlopen("roc_video", ...)`. A symlink `lib/roc_video → /Volumes/ROCSDK/lib/libroc_video.dylib` in the project root makes it findable.
+- **Frame null guard**: `if (!frame || !frame.data) break` — end-of-stream sometimes returns a truthy frame with null pixel data; this prevents "Null image data!" crashes.
+- **License capability probe**: at startup, `probeCapabilities()` runs a 1×1 JPEG through vehicle/gun detection to check what the license supports. Results cached in `vehicleDetectionSupported` / `gunDetectionSupported` flags — prevents per-frame error spam when a feature is unlicensed.
+- **Face detection**: runs unconditionally on every frame (outside the vehicle-first gate) so pedestrians and motorcyclists aren't missed. Quality threshold `0.05` for surveillance sensitivity.
+- **roc-serve is NOT used**. The `ROC-RC-MACOS.lic` license type forces roc-serve into floating-license-server mode.
+
+## Detection Thresholds (defaults)
+
+| Param | Default | Notes |
+|-------|---------|-------|
+| `minQuality` | `0.2` | LPR quality gate. Lower = more detections but more noise. Do not go below `0.1`. |
+| `relativeMinSize` | `0.02` | Min plate width as fraction of image width. `0.01` causes 5× slower processing. |
+| `ignorePartial` | `false` | `true` was dropping hood-occluded plates entirely. |
+| `falseDetectionRate` | `0.1` | |
+| `maxPlates` | `10` | |
+
+## Pre-filter Gates (`passesPreFilters`)
+
+Applied before tracker/session input and before DB write.
+
+| Check | Threshold | Rationale |
+|-------|-----------|-----------|
+| Width | ≥ 40 px | 60px was rejecting plates at typical traffic distances (LEF4869 appeared at 53px) |
+| Confidence | ≥ 0.65 | 0.75 was rejecting valid plates at angle/distance |
+| Aspect ratio (w/h) | ≥ 1.1 | Blocks portrait badges/logos only. New-format Pakistani green plates are two-line stacked (~1.0–1.3 ratio); 1.5 was blocking them. Regex is the primary false-positive gate. |
+| Pakistani regex | `^[A-Z]{2,4}\d{3,8}$` | Primary false-positive filter |
+
+Debug-level logs emit the rejection reason + raw text for every skipped plate.
+
+## Pakistani Plate Validation
+
+`src/common/plate.util.ts` — `isValidPakistaniPlate(normalized)`:
+- Regex: `^[A-Z]{2,4}\d{3,8}$`
+- Covers old format (`ABC1234`) and new format (`ABC121234`, i.e. `ABC-12-1234` after stripping hyphens)
+- Applied in `passesPreFilters()` before tracker/session input — see Pre-filter Gates table for all thresholds
+- **For Pakistani plates use `NORTH_AMERICAN` region** — the `ASIAN` classifier is optimized for East Asian plates (Chinese/Japanese/Korean formats)
 
 ## Project Structure
 
 ```
 alpr-api/
-├── roc.node                        # Native addon — project root
-├── data/alpr.sqlite                # SQLite database (auto-created)
-├── .env
+├── roc.node                          # Native addon — project root
+├── data/alpr.sqlite                  # SQLite database (auto-created)
+├── .env / .env.example
 ├── src/
-│   ├── main.ts                     # Bootstrap; dotenv loaded here before NestFactory
-│   ├── app.module.ts               # Root module — TypeORM config lives here
-│   ├── config/
-│   │   └── configuration.ts        # Typed config factory (port, roc.modelPath, upload.maxFileSizeMb)
+│   ├── main.ts
+│   ├── app.module.ts
+│   ├── config/configuration.ts
 │   ├── common/
-│   │   └── plate.util.ts           # normalizePlate(): uppercase + strip spaces/hyphens
+│   │   ├── plate.util.ts             # normalizePlate() + isValidPakistaniPlate()
+│   │   ├── plate-tracker.ts          # PlateTracker — for camera/stream SSE mode
+│   │   └── vehicle-tracker.ts        # VehicleTracker — for video session mode
 │   ├── roc/
-│   │   └── roc.service.ts          # SDK wrapper — detectLicensePlates(), detectVideoFrames(), ping()
+│   │   └── roc.service.ts            # SDK wrapper
 │   ├── alpr/
-│   │   ├── alpr.service.ts         # Orchestration: detect → enrich → log → alert → SSE
-│   │   ├── alpr.controller.ts      # POST /api/alpr/detect, detect-url, detect-video; GET /health
+│   │   ├── alpr.service.ts           # Orchestration + video session management
+│   │   ├── alpr.controller.ts
 │   │   └── dto/
-│   │       ├── detect-plate.dto.ts
-│   │       └── plate-result.dto.ts
-│   ├── events/
-│   │   ├── detection-event.entity.ts
-│   │   ├── events.service.ts       # create(), findAll() with filters + pagination, findByPerson(), delete()
-│   │   └── events.controller.ts    # GET /api/events, SSE /api/events/stream, DELETE /:id
+│   ├── cameras/                      # Camera entity + CRUD + CameraWorkerService
+│   ├── events/                       # DetectionEvent entity + CRUD + SSE
+│   ├── face-events/                  # FaceEvent entity + CRUD (controller added)
 │   ├── persons/
-│   │   ├── person.entity.ts
-│   │   ├── persons.service.ts      # findByPlate() uses LIKE '%"<plate>"%' on JSON column
-│   │   └── persons.controller.ts   # CRUD; GET /:id returns person + visits array
 │   ├── watchlist/
-│   │   ├── watchlist.entity.ts
-│   │   ├── alert.entity.ts
-│   │   ├── watchlist.service.ts    # checkAndAlert(), getAlerts(), acknowledgeAlert()
-│   │   └── watchlist.controller.ts # WatchlistController + AlertsController in same file
-│   └── notifications/
-│       └── notifications.service.ts # Two RxJS Subjects — events$ and alerts$ — for SSE broadcast
+│   └── notifications/                # events$, alerts$, guns$ RxJS Subjects
 ```
 
 ## API Endpoints
@@ -95,88 +119,110 @@ alpr-api/
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/detect` | Upload image (multipart `image` field), returns `AlprResultDto` |
-| `POST` | `/detect-url` | JSON body `{ imageUrl, region, ... }`, fetches and detects |
-| `POST` | `/detect-video` | Upload video (multipart `video` field), streams SSE frames |
-| `POST` | `/detect-stream` | JSON body `{ url, region, ... }`, streams live feed SSE frames |
-| `GET` | `/health` | `{ status, rocInitialized, modelPath }` |
+| `POST` | `/detect` | Upload image (multipart `image`). Optional `?sessionId=` for video session tracking. |
+| `POST` | `/detect-url` | JSON `{ imageUrl, region, ... }` |
+| `POST` | `/detect-video` | Upload video (multipart `video`), streams SSE frames |
+| `POST` | `/detect-stream` | JSON `{ url, region, ... }`, streams live feed SSE |
+| `POST` | `/sessions/:sessionId/flush` | Commit one best event per tracked vehicle in a video session |
+| `GET` | `/gun-alerts` | SSE stream of real-time gun detection alerts |
+| `GET` | `/health` | `{ status, rocInitialized, modelPath, capabilities }` — no auth required |
 
-Query params for detection: `region` (`NORTH_AMERICAN` \| `EUROPEAN` \| `PACIFIC`), `maxPlates`, `minQuality`, `relativeMinSize`, `thumbnail`, `ignorePartial`.
+`capabilities` in health response: `{ lpr, face, vehicle, gun }` booleans reflecting what the license supports.
+
+Query params for `/detect`: `region`, `maxPlates`, `minQuality`, `relativeMinSize`, `thumbnail`, `ignorePartial`, `frameStep`, `sessionId`.
 
 ### Events (`/api/events`)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/` | Paginated list — query: `plate`, `personId`, `source`, `startDate`, `endDate`, `limit`, `offset` |
+| `GET` | `/` | Paginated — query: `plate`, `personId`, `source`, `startDate`, `endDate`, `limit`, `offset` |
 | `GET` | `/stream` | SSE — emits `detection` events in real time |
-| `DELETE` | `/:id` | Delete a single event |
+| `DELETE` | `/:id` | Delete |
 
-### Persons (`/api/persons`)
+### Face Events (`/api/face-events`)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/` | All persons |
-| `POST` | `/` | Create — body: `{ name, plateNumbers: string[], notes? }` |
-| `GET` | `/:id` | Person + `visits` array (matching detection events) |
-| `PUT` | `/:id` | Update |
+| `GET` | `/` | Query: `personId`, `cameraId`, `spoofOnly`, `startDate`, `endDate`, `limit`, `offset` |
 | `DELETE` | `/:id` | Delete |
 
-### Watchlist (`/api/watchlist`)
+### Persons, Watchlist, Alerts — unchanged from previous version.
+
+### Cameras (`/api/cameras`)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/` | All entries — query: `activeOnly=true` |
-| `POST` | `/` | Create — body: `{ plateText, reason? }` |
-| `PATCH` | `/:id` | Update — body: `{ active?, reason? }` |
-| `DELETE` | `/:id` | Delete |
+| `GET` | `/` | All cameras with `streaming` status |
+| `POST` | `/` | Create + start stream worker |
+| `PUT` | `/:id` | Update (setting `active: false` stops the worker) |
+| `DELETE` | `/:id` | Delete + stop worker |
 
-### Alerts (`/api/alerts`)
+## Tracking Architecture
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/` | All alerts — query: `acknowledged=false` |
-| `PATCH` | `/:id/acknowledge` | Mark acknowledged |
-| `DELETE` | `/:id` | Delete |
-| `GET` | `/stream` | SSE — emits `alert` events in real time |
+Two separate trackers exist for different use cases:
 
-## Database Schema
+### PlateTracker (`src/common/plate-tracker.ts`)
+Used by **camera workers** and **live stream SSE** (`processCombinedFrame`).
+- Matches by: OCR text similarity (Levenshtein ≤ 2) **OR** spatial proximity (centroid within 4× plate size)
+- Winner: most observations, confidence as tiebreaker
+- Commits after **8s idle**, requires **≥3 observations**
+- Tracks centroid X for direction-of-travel (`left` / `right` / `stationary`)
 
-**`detection_events`** — every ALPR detection. Indexed on `plateText` and `timestamp`.
+### VehicleTracker (`src/common/vehicle-tracker.ts`)
+Used by **video sessions** (client-side frame capture from the detect page).
+- Matches by: **spatial proximity only** (centroid within 4× plate size) — text not used
+- Winner: **largest bounding box** (= vehicle physically closest = sharpest OCR read)
+- Commits after **8s idle**, requires **≥1 reading** (single clean frame is enough — prefilters already ensure quality)
+- Sessions keyed by `sessionId` UUID, auto-expire after **2 minutes** idle
 
-**`persons`** — registered persons. `plateNumbers` is stored as a JSON array (TypeORM `simple-json`). Plate lookup uses `LIKE '%"<plate>"%'` — the quotes are intentional to avoid partial matches inside the JSON string.
-
-**`watchlist`** — flagged plates. `plateText` is unique. `active` bool controls whether alerts fire.
-
-**`alerts`** — fired when a watchlist plate is detected. `acknowledged` defaults to false. References `watchlistEntryId` and `detectionEventId` (not FK-constrained — SQLite/TypeORM simple columns).
-
-TypeORM `synchronize: true` is on — schema migrations happen automatically on startup.
+### Video Session Flow
+1. Frontend generates UUID `sessionId` when analysis starts
+2. Each frame POST includes `?sessionId=<uuid>`
+3. Backend feeds plates into `VehicleTracker` per session — **no DB write yet**
+4. On video end/stop, frontend calls `POST /api/alpr/sessions/:id/flush`
+5. Server commits one event per vehicle track (best reading) → DB + watchlist + SSE
+6. Result: one clean DB event per vehicle, always from the closest/clearest frame
 
 ## Detection Pipeline
 
+### Image upload (no sessionId)
 ```
 POST /alpr/detect
-  → RocService.detectLicensePlates()   # write buffer → tmp file → roc_read_image → roc_represent_lpr_ex
-  → AlprService.enrichPlates()         # for each plate: PersonsService.findByPlate() → attach personId/personName
-  → AlprService.logAndAlert()          # per plate:
-      EventsService.create()           # INSERT detection_event
-      NotificationsService.emitEvent() # push to events$ Subject → SSE /events/stream
-      WatchlistService.checkAndAlert() # if active watchlist entry exists:
-          Alert INSERT
-          NotificationsService.emitAlert() # push to alerts$ Subject → SSE /alerts/stream
+  → detectLicensePlates() + detectFaces() + detectObjectsFromBuffer()  [parallel]
+  → enrichPlates() → logAndAlert() per plate → EventsService.create() + SSE + watchlist check
 ```
 
-## Plate Normalization
+### Image upload (with sessionId — video tab)
+```
+POST /alpr/detect?sessionId=xxx
+  → detect [same as above]
+  → processIntoSession(): passesPreFilters() → VehicleTracker.observe()  [no DB write]
+  → returns detection result for overlay display
 
-`normalizePlate()` in `src/common/plate.util.ts`: `toUpperCase().replace(/[\s\-_]/g, '')`. Applied before all DB writes and lookups. The watchlist `plateText` column stores normalized values; `findByPlate` normalizes the input before querying.
+POST /api/alpr/sessions/xxx/flush  (on video stop/end)
+  → VehicleTracker.flushAll() → logAndAlert() per committed track → DB + SSE
+```
+
+### Camera / stream SSE
+```
+CameraWorkerService / detectLiveStream()
+  → processVideoSource(): vehicle gate → LPR + vehicles + guns [if vehiclePresent]
+                          face detection [always, unconditional]
+  → processCombinedFrame(): PlateTracker.observe() → logCommitted() on idle sessions
+```
 
 ## SSE Architecture
 
-`NotificationsService` holds two `Subject<SseMessage>` instances. Controllers pipe them through RxJS `map` to produce `MessageEvent` objects. The frontend connects with `EventSource` and listens for `detection` and `alert` event types.
+`NotificationsService` holds three `Subject<SseMessage>` instances:
+- `events$` → `/api/events/stream` (`detection` events)
+- `alerts$` → `/api/alerts/stream` (`alert` events)
+- `guns$` → `/api/alpr/gun-alerts` (`gun` events)
 
 ## Known Constraints
 
-- ROC SDK volume (`/Volumes/ROCSDK`) must be mounted before starting the server — `onModuleInit` will throw if the model path is unreachable.
-- `DYLD_LIBRARY_PATH` must be set in the shell; it cannot be set from inside Node.js after the process starts.
-- SQLite `better-sqlite3` is synchronous — TypeORM wraps it in async APIs but there is no connection pool. Concurrent heavy video jobs can stall.
-- Video detection processes every 15th frame by default. For high-frame-rate footage, tune `frameStep`.
-- Max video upload size is **1GB**.
+- ROC SDK volume (`/Volumes/ROCSDK`) must be mounted before starting.
+- `DYLD_LIBRARY_PATH` must be set in the shell before the process starts.
+- SQLite `better-sqlite3` is synchronous — no connection pool; concurrent heavy video jobs can stall.
+- `relativeMinSize: 0.01` causes 5–7× slower LPR (more scale pyramid levels). Keep at `0.02` minimum.
+- Max video upload size is **1GB** (for server-side video SSE mode).
+- Video session tracker lives in `AlprService` memory — restarting the server loses any unflushed sessions.

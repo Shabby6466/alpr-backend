@@ -6,16 +6,19 @@ interface VoteEntry {
 }
 
 interface Session {
-  /** The plate text of the first observation — used as the fuzzy-match key. */
   anchorText: string;
   votes: Map<string, VoteEntry>;
   totalVotes: number;
   lastSeen: number;
+  firstCentroidX: number;
+  lastCentroidX: number;
+  lastCentroidY: number;
+  lastWidth: number;
+  lastHeight: number;
 }
 
 function levenshtein(a: string, b: string): number {
   if (a === b) return 0;
-  // Fast reject: length difference alone exceeds threshold
   if (Math.abs(a.length - b.length) > 3) return 99;
   const n = b.length;
   const dp: number[] = Array.from({ length: n + 1 }, (_, j) => j);
@@ -31,12 +34,51 @@ function levenshtein(a: string, b: string): number {
   return dp[n];
 }
 
+function centroidX(plate: PlateDto): number {
+  return plate.boundingBox.x + plate.boundingBox.width / 2;
+}
+
+function centroidY(plate: PlateDto): number {
+  return plate.boundingBox.y + plate.boundingBox.height / 2;
+}
+
+function computeDirection(firstX: number, lastX: number): 'left' | 'right' | 'stationary' {
+  const delta = lastX - firstX;
+  if (Math.abs(delta) < 40) return 'stationary';
+  return delta > 0 ? 'right' : 'left';
+}
+
 /**
- * Groups multi-frame plate observations by OCR similarity and returns a single
- * "committed" winner per vehicle pass once the car leaves the frame.
+ * Matches an incoming plate to an existing session using two criteria:
  *
- * - commitAfterMs: how long after the last sighting to flush a session (default 5s)
- * - maxEditDistance: OCR typos to tolerate when grouping (default 2 chars)
+ * 1. OCR similarity — Levenshtein distance ≤ maxEditDistance (catches minor misreads)
+ * 2. Spatial proximity — centroid within K×plate-size of the session's last position
+ *    (catches cases where the same physical plate was misread badly from a distance,
+ *    producing a text too different to match by edit distance alone)
+ *
+ * Spatial match uses a generous 4× multiplier so a plate that doubles in size
+ * (vehicle halves its distance) still matches the same session.
+ */
+function spatiallyClose(plate: PlateDto, session: Session): boolean {
+  const cx = centroidX(plate);
+  const cy = centroidY(plate);
+  // Use the larger of incoming/session plate dimensions as the proximity scale
+  const refW = Math.max(plate.boundingBox.width, session.lastWidth);
+  const refH = Math.max(plate.boundingBox.height, session.lastHeight);
+  const dx = Math.abs(cx - session.lastCentroidX);
+  const dy = Math.abs(cy - session.lastCentroidY);
+  return dx < refW * 4 && dy < refH * 4;
+}
+
+/**
+ * Groups multi-frame plate observations into sessions, commits the best reading
+ * per session once it has been idle for commitAfterMs.
+ *
+ * A session is only committed when it has accumulated at least minObservations —
+ * this suppresses single low-confidence shots from far-away plates that would
+ * otherwise be logged before the vehicle comes close enough to read correctly.
+ *
+ * If a session expires without reaching minObservations, it is silently dropped.
  */
 export class PlateTracker {
   private readonly sessions = new Map<string, Session>();
@@ -44,27 +86,44 @@ export class PlateTracker {
   constructor(
     private readonly commitAfterMs = 5_000,
     private readonly maxEditDistance = 2,
+    private readonly minObservations = 3,
   ) {}
 
-  /**
-   * Record one plate observation. Returns any sessions that have been idle
-   * long enough to be committed (these should be logged to the DB).
-   */
   observe(plate: PlateDto): PlateDto[] {
     const now = Date.now();
     const committed = this.flushExpired(now);
+    const cx = centroidX(plate);
+    const cy = centroidY(plate);
 
     let matched: Session | undefined;
     for (const session of this.sessions.values()) {
-      if (levenshtein(plate.text, session.anchorText) <= this.maxEditDistance) {
+      if (
+        levenshtein(plate.text, session.anchorText) <= this.maxEditDistance ||
+        spatiallyClose(plate, session)
+      ) {
         matched = session;
         break;
       }
     }
 
     if (!matched) {
-      matched = { anchorText: plate.text, votes: new Map(), totalVotes: 0, lastSeen: now };
+      matched = {
+        anchorText: plate.text,
+        votes: new Map(),
+        totalVotes: 0,
+        lastSeen: now,
+        firstCentroidX: cx,
+        lastCentroidX: cx,
+        lastCentroidY: cy,
+        lastWidth: plate.boundingBox.width,
+        lastHeight: plate.boundingBox.height,
+      };
       this.sessions.set(plate.text + '_' + now, matched);
+    } else {
+      matched.lastCentroidX = cx;
+      matched.lastCentroidY = cy;
+      matched.lastWidth = plate.boundingBox.width;
+      matched.lastHeight = plate.boundingBox.height;
     }
 
     const existing = matched.votes.get(plate.text);
@@ -80,11 +139,12 @@ export class PlateTracker {
     return committed;
   }
 
-  /** Force-commit all open sessions (call when stream ends). */
   flushAll(): PlateDto[] {
     const results: PlateDto[] = [];
     for (const [key, session] of this.sessions) {
-      results.push(this.pickWinner(session));
+      if (session.totalVotes >= this.minObservations) {
+        results.push(this.pickWinner(session));
+      }
       this.sessions.delete(key);
     }
     return results;
@@ -94,7 +154,9 @@ export class PlateTracker {
     const results: PlateDto[] = [];
     for (const [key, session] of this.sessions) {
       if (now - session.lastSeen >= this.commitAfterMs) {
-        results.push(this.pickWinner(session));
+        if (session.totalVotes >= this.minObservations) {
+          results.push(this.pickWinner(session));
+        }
         this.sessions.delete(key);
       }
     }
@@ -112,6 +174,8 @@ export class PlateTracker {
         winner = entry;
       }
     }
-    return winner!.best;
+    const plate = { ...winner!.best };
+    plate.direction = computeDirection(session.firstCentroidX, session.lastCentroidX);
+    return plate;
   }
 }

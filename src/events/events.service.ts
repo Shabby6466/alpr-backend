@@ -1,17 +1,25 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between, Like } from 'typeorm';
+import { Repository } from 'typeorm';
 import { DetectionEvent } from './detection-event.entity';
 import { normalizePlate } from '../common/plate.util';
 
 export interface CreateEventDto {
   plateText: string;
   confidence: number;
-  source: 'image' | 'video' | 'stream';
+  source: 'image' | 'video' | 'stream' | 'camera';
   personId?: string;
   personName?: string;
   thumbnailBase64?: string;
   x: number; y: number; width: number; height: number;
+  vehicleMake?: string;
+  vehicleModel?: string;
+  vehicleColor?: string;
+  vehicleThumbnail?: string;
+  direction?: 'left' | 'right' | 'stationary';
+  cameraId?: string;
+  cameraName?: string;
+  gunDetected?: boolean;
 }
 
 @Injectable()
@@ -22,15 +30,17 @@ export class EventsService {
   ) {}
 
   create(dto: CreateEventDto): Promise<DetectionEvent> {
-    const event = this.repo.create(dto);
+    const event = this.repo.create({ gunDetected: false, ...dto });
     return this.repo.save(event);
   }
 
   findAll(filters: {
     plate?: string;
     personId?: string;
+    source?: string;
     startDate?: string;
     endDate?: string;
+    cameraId?: string;
     limit?: number;
     offset?: number;
   }): Promise<[DetectionEvent[], number]> {
@@ -38,6 +48,8 @@ export class EventsService {
 
     if (filters.plate) qb.andWhere('e.plateText LIKE :plate', { plate: `%${normalizePlate(filters.plate)}%` });
     if (filters.personId) qb.andWhere('e.personId = :personId', { personId: filters.personId });
+    if (filters.source) qb.andWhere('e.source = :source', { source: filters.source });
+    if (filters.cameraId) qb.andWhere('e.cameraId = :cameraId', { cameraId: filters.cameraId });
     if (filters.startDate) qb.andWhere('e.timestamp >= :start', { start: new Date(filters.startDate) });
     if (filters.endDate) qb.andWhere('e.timestamp <= :end', { end: new Date(filters.endDate) });
 
@@ -57,15 +69,13 @@ export class EventsService {
   async getStats(days = 7) {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
-
-    const qb = this.repo.createQueryBuilder('e')
+    const raw = await this.repo.createQueryBuilder('e')
       .select("strftime('%Y-%m-%d %H:00:00', e.timestamp)", 'hour')
       .addSelect('COUNT(*)', 'count')
       .where('e.timestamp >= :start', { start: startDate })
       .groupBy('hour')
-      .orderBy('hour', 'ASC');
-
-    const raw = await qb.getRawMany();
+      .orderBy('hour', 'ASC')
+      .getRawMany();
     return raw.map(r => ({ time: r.hour, count: parseInt(r.count, 10) }));
   }
 
@@ -91,7 +101,47 @@ export class EventsService {
       .getRawMany();
   }
 
+  async getVehicleStats(days = 30) {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+    const makes = await this.repo.createQueryBuilder('e')
+      .select('e.vehicleMake', 'make')
+      .addSelect('COUNT(*)', 'count')
+      .where('e.timestamp >= :start AND e.vehicleMake IS NOT NULL', { start: startDate })
+      .groupBy('e.vehicleMake')
+      .orderBy('count', 'DESC')
+      .limit(10)
+      .getRawMany();
+    const colors = await this.repo.createQueryBuilder('e')
+      .select('e.vehicleColor', 'color')
+      .addSelect('COUNT(*)', 'count')
+      .where('e.timestamp >= :start AND e.vehicleColor IS NOT NULL', { start: startDate })
+      .groupBy('e.vehicleColor')
+      .orderBy('count', 'DESC')
+      .limit(10)
+      .getRawMany();
+    return { makes, colors };
+  }
+
+  async getSourceBreakdown(days = 7) {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - days);
+    return this.repo.createQueryBuilder('e')
+      .select('e.source', 'source')
+      .addSelect('COUNT(*)', 'count')
+      .where('e.timestamp >= :start', { start: startDate })
+      .groupBy('e.source')
+      .getRawMany();
+  }
+
   delete(id: string) {
     return this.repo.delete(id);
+  }
+
+  deleteOlderThan(cutoff: Date) {
+    return this.repo.createQueryBuilder()
+      .delete()
+      .where('timestamp < :cutoff', { cutoff })
+      .execute();
   }
 }

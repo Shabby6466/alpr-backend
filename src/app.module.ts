@@ -7,10 +7,16 @@ import { EventsModule } from './events/events.module';
 import { PersonsModule } from './persons/persons.module';
 import { WatchlistModule } from './watchlist/watchlist.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { FaceEventsModule } from './face-events/face-events.module';
+import { CamerasModule } from './cameras/cameras.module';
+import { AuthModule } from './auth/auth.module';
+import { RetentionModule } from './retention/retention.module';
 import { DetectionEvent } from './events/detection-event.entity';
+import { FaceEvent } from './face-events/face-event.entity';
 import { Person } from './persons/person.entity';
 import { WatchlistEntry } from './watchlist/watchlist.entity';
 import { Alert } from './watchlist/alert.entity';
+import { Camera } from './cameras/camera.entity';
 
 @Module({
   imports: [
@@ -18,14 +24,18 @@ import { Alert } from './watchlist/alert.entity';
     TypeOrmModule.forRoot({
       type: 'better-sqlite3',
       database: 'data/alpr.sqlite',
-      entities: [DetectionEvent, Person, WatchlistEntry, Alert],
+      entities: [DetectionEvent, FaceEvent, Person, WatchlistEntry, Alert, Camera],
       synchronize: true,
     }),
+    AuthModule,
     NotificationsModule,
     EventsModule,
     PersonsModule,
     WatchlistModule,
+    FaceEventsModule,
     AlprModule,
+    CamerasModule,
+    RetentionModule,
   ],
 })
 export class AppModule {}

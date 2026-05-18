@@ -10,9 +10,11 @@ export interface SseMessage {
 export class NotificationsService {
   private eventStream$ = new Subject<SseMessage>();
   private alertStream$ = new Subject<SseMessage>();
+  private gunStream$ = new Subject<SseMessage>();
 
   get events$() { return this.eventStream$.asObservable(); }
   get alerts$() { return this.alertStream$.asObservable(); }
+  get guns$() { return this.gunStream$.asObservable(); }
 
   emitEvent(data: any) {
     this.eventStream$.next({ data, type: 'detection' });
@@ -20,5 +22,9 @@ export class NotificationsService {
 
   emitAlert(data: any) {
     this.alertStream$.next({ data, type: 'alert' });
+  }
+
+  emitGunAlert(data: any) {
+    this.gunStream$.next({ data, type: 'gun' });
   }
 }
