@@ -6,6 +6,7 @@ import { PersonsService } from '../persons/persons.service';
 import { WatchlistService } from '../watchlist/watchlist.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { FaceEventsService } from '../face-events/face-events.service';
+import { JourneysService } from '../journeys/journeys.service';
 import { DetectPlateDto, DetectPlateFromUrlDto } from './dto/detect-plate.dto';
 import { AlprResultDto, PlateDto, FaceDto, VehicleDto, HealthDto, CombinedResultDto } from './dto/plate-result.dto';
 import { normalizePlate, isValidPakistaniPlate } from '../common/plate.util';
@@ -38,6 +39,7 @@ export class AlprService implements OnModuleDestroy {
     private readonly watchlistService: WatchlistService,
     private readonly notifications: NotificationsService,
     private readonly faceEvents: FaceEventsService,
+    private readonly journeys: JourneysService,
     private readonly config: ConfigService,
   ) {}
 
@@ -167,6 +169,28 @@ export class AlprService implements OnModuleDestroy {
    * Used both by the controller (one-shot SSE) and CameraWorkerService (persistent loop).
    * cameraId/cameraName are populated by camera workers; null for direct API calls.
    */
+  async *testCameraWithVideo(
+    camera: { id: string; name: string; region?: string; frameStep?: number },
+    file: Express.Multer.File,
+  ): AsyncGenerator<CombinedResultDto> {
+    if (!file) throw new BadRequestException('No video file provided');
+    const params: DetectPlateDto = {
+      region: (camera.region ?? 'NORTH_AMERICAN') as any,
+      frameStep: camera.frameStep ?? 5,
+      thumbnail: true,
+      ignorePartial: false,
+    };
+    try {
+      for await (const result of this.roc.detectVideoFrames(
+        file.buffer, params, params.frameStep ?? 5, file.originalname,
+      )) {
+        yield* this.processCombinedFrame(result, 'camera', camera.id, camera.name);
+      }
+    } finally {
+      await this.flushTracker('camera', camera.id, camera.name);
+    }
+  }
+
   async *detectLiveStream(
     url: string,
     params: DetectPlateDto,
@@ -268,10 +292,13 @@ export class AlprService implements OnModuleDestroy {
     gunDetected = false,
   ) {
     const now = Date.now();
-    const last = this.recentlyLogged.get(plate.text);
+    // Cooldown is per plate+camera — same plate at a different camera always logs
+    // (cross-camera hop must not be suppressed by the cooldown)
+    const cooldownKey = `${plate.text}:${cameraId ?? ''}`;
+    const last = this.recentlyLogged.get(cooldownKey);
     if (last !== undefined && now - last < PLATE_COOLDOWN_MS) return;
 
-    this.recentlyLogged.set(plate.text, now);
+    this.recentlyLogged.set(cooldownKey, now);
     if (this.recentlyLogged.size > 500) {
       for (const [k, t] of this.recentlyLogged) {
         if (now - t > PLATE_COOLDOWN_MS) this.recentlyLogged.delete(k);
@@ -466,6 +493,17 @@ export class AlprService implements OnModuleDestroy {
 
     this.notifications.emitEvent({ ...event, personName: plate.personName });
     await this.watchlistService.checkAndAlert(plate.text, event.id, plate.thumbnail);
+
+    if (cameraId) {
+      await this.journeys.recordSighting({
+        plateText: plate.text,
+        cameraId,
+        cameraName,
+        thumbnailBase64: plate.thumbnail,
+        confidence: plate.confidence,
+        detectionEventId: event.id,
+      });
+    }
   }
 
   private fetchUrl(url: string): Promise<Buffer> {

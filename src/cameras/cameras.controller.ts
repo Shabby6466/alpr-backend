@@ -1,15 +1,20 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param } from '@nestjs/common';
-import { ApiTags, ApiOperation } from '@nestjs/swagger';
+import { Controller, Get, Post, Patch, Delete, Body, Param, UseInterceptors, UploadedFile, Res, Logger } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiTags, ApiOperation, ApiConsumes } from '@nestjs/swagger';
+import { Response } from 'express';
 import { CamerasService } from './cameras.service';
 import { CameraWorkerService } from './camera-worker.service';
+import { AlprService } from '../alpr/alpr.service';
 import { CreateCameraDto, UpdateCameraDto } from './dto/camera.dto';
 
 @ApiTags('Cameras')
 @Controller('cameras')
 export class CamerasController {
+  private readonly logger = new Logger(CamerasController.name);
   constructor(
     private readonly cameras: CamerasService,
     private readonly workers: CameraWorkerService,
+    private readonly alpr: AlprService,
   ) {}
 
   @Post()
@@ -48,6 +53,36 @@ export class CamerasController {
       if (camera.active) this.workers.startWorker(camera);
     }
     return { ...camera, streaming: this.workers.isRunning(id) };
+  }
+
+  @Post(':id/test-video')
+  @ApiOperation({ summary: 'Upload a test video processed as if seen by this camera — creates journey sightings with camera GPS' })
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(FileInterceptor('video', { limits: { fileSize: 1024 * 1024 * 1024 } }))
+  async testVideo(
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File,
+    @Res() res: Response,
+  ) {
+    const camera = await this.cameras.findOne(id);
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    this.logger.log(`Test video for camera "${camera.name}": ${file?.originalname} (${((file?.size ?? 0) / 1024 / 1024).toFixed(2)} MB)`);
+    let frames = 0;
+    try {
+      for await (const frame of this.alpr.testCameraWithVideo(camera, file)) {
+        frames++;
+        res.write(`event: detection\ndata: ${JSON.stringify(frame)}\n\n`);
+      }
+    } catch (err: any) {
+      this.logger.error(`Test video error after ${frames} frames: ${err?.message}`);
+      res.write(`event: error\ndata: ${JSON.stringify({ error: err?.message })}\n\n`);
+    } finally {
+      this.logger.log(`Test video done for "${camera.name}": ${frames} frames`);
+      res.write(`event: done\ndata: ${JSON.stringify({ frames })}\n\n`);
+      res.end();
+    }
   }
 
   @Delete(':id')

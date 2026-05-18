@@ -20,6 +20,15 @@ export class Camera {
   @Column({ nullable: true })
   notes?: string;
 
+  @Column({ nullable: true })
+  zone?: string;
+
+  @Column({ nullable: true, type: 'real' })
+  lat?: number;
+
+  @Column({ nullable: true, type: 'real' })
+  lng?: number;
+
   // ROI zones — stored as JSON arrays of {x,y,width,height} objects (pixel or normalized coords)
   @Column({ type: 'simple-json', nullable: true })
   roiInclude?: { x: number; y: number; width: number; height: number }[];

@@ -11,12 +11,15 @@ import { FaceEventsModule } from './face-events/face-events.module';
 import { CamerasModule } from './cameras/cameras.module';
 import { AuthModule } from './auth/auth.module';
 import { RetentionModule } from './retention/retention.module';
+import { JourneysModule } from './journeys/journeys.module';
 import { DetectionEvent } from './events/detection-event.entity';
 import { FaceEvent } from './face-events/face-event.entity';
 import { Person } from './persons/person.entity';
 import { WatchlistEntry } from './watchlist/watchlist.entity';
 import { Alert } from './watchlist/alert.entity';
 import { Camera } from './cameras/camera.entity';
+import { Journey } from './journeys/journey.entity';
+import { JourneySighting } from './journeys/journey-sighting.entity';
 
 @Module({
   imports: [
@@ -24,7 +27,7 @@ import { Camera } from './cameras/camera.entity';
     TypeOrmModule.forRoot({
       type: 'better-sqlite3',
       database: 'data/alpr.sqlite',
-      entities: [DetectionEvent, FaceEvent, Person, WatchlistEntry, Alert, Camera],
+      entities: [DetectionEvent, FaceEvent, Person, WatchlistEntry, Alert, Camera, Journey, JourneySighting],
       synchronize: true,
     }),
     AuthModule,
@@ -35,6 +38,7 @@ import { Camera } from './cameras/camera.entity';
     FaceEventsModule,
     AlprModule,
     CamerasModule,
+    JourneysModule,
     RetentionModule,
   ],
 })

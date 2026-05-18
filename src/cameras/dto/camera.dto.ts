@@ -23,6 +23,9 @@ export class CreateCameraDto {
   frameStep?: number = 5;
 
   @ApiPropertyOptional() @IsOptional() @IsString() notes?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() zone?: string;
+  @ApiPropertyOptional() @IsOptional() @IsNumber() @Type(() => Number) lat?: number;
+  @ApiPropertyOptional() @IsOptional() @IsNumber() @Type(() => Number) lng?: number;
 
   @ApiPropertyOptional({ type: [RoiZoneDto] })
   @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => RoiZoneDto)
@@ -40,6 +43,9 @@ export class UpdateCameraDto {
   @ApiPropertyOptional() @IsOptional() @IsNumber() @Min(1) @Max(30) @Type(() => Number) frameStep?: number;
   @ApiPropertyOptional() @IsOptional() @IsBoolean() active?: boolean;
   @ApiPropertyOptional() @IsOptional() @IsString() notes?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() zone?: string;
+  @ApiPropertyOptional() @IsOptional() @IsNumber() @Type(() => Number) lat?: number;
+  @ApiPropertyOptional() @IsOptional() @IsNumber() @Type(() => Number) lng?: number;
   @ApiPropertyOptional({ type: [RoiZoneDto] }) @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => RoiZoneDto) roiInclude?: RoiZoneDto[];
   @ApiPropertyOptional({ type: [RoiZoneDto] }) @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => RoiZoneDto) roiExclude?: RoiZoneDto[];
 }
