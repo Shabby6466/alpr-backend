@@ -41,10 +41,28 @@ export class EventsController {
     return this.events.getStats(days ? parseInt(days, 10) : 7);
   }
 
+  @Get('summary')
+  @ApiOperation({ summary: 'Aggregate totals: detections, unique plates, avg confidence' })
+  getSummary(@Query('days') days?: string) {
+    return this.events.getSummary(days ? parseInt(days, 10) : 7);
+  }
+
   @Get('top-plates')
   @ApiOperation({ summary: 'Most frequently seen license plates' })
-  getTopPlates(@Query('limit') limit?: string) {
-    return this.events.getTopPlates(limit ? parseInt(limit, 10) : 10);
+  getTopPlates(@Query('limit') limit?: string, @Query('days') days?: string) {
+    return this.events.getTopPlates(
+      limit ? parseInt(limit, 10) : 10,
+      days ? parseInt(days, 10) : undefined,
+    );
+  }
+
+  @Get('top-cameras')
+  @ApiOperation({ summary: 'Most active cameras by detection count' })
+  getTopCameras(@Query('limit') limit?: string, @Query('days') days?: string) {
+    return this.events.getTopCameras(
+      limit ? parseInt(limit, 10) : 10,
+      days ? parseInt(days, 10) : undefined,
+    );
   }
 
   @Get('top-persons')

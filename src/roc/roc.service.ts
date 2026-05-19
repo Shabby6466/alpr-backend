@@ -217,6 +217,7 @@ export class RocService implements OnModuleInit, OnModuleDestroy {
     fs.writeFileSync(tmpPath, imageBuffer);
     try {
       const image = await roc.roc_read_image(tmpPath, roc.ROC_BGR24);
+      console.log('face detection image:', image);
       return await this.runFace(image);
     } catch (err) {
       this.logger.error('Face detection failed', err?.message);
@@ -455,9 +456,11 @@ export class RocService implements OnModuleInit, OnModuleDestroy {
 
   private async runLpr(image: any, options: LprDetectOptions): Promise<RawPlateResult[]> {
     const algorithmId = this.buildLprAlgorithmId(options);
+    console.log('algo id:', algorithmId);
+    console.log('image:', image);
     const params: Record<string, any> = {
       algorithm_id: algorithmId,
-      maximum_templates: options.maxPlates ?? 10,
+      maximum_templates: options.maxPlates ?? 100,
       min_quality: options.minQuality ?? 0.2,
       relative_min_size: options.relativeMinSize ?? 0.02,
       degrees: options.degrees ?? 0,

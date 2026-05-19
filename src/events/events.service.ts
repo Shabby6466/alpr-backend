@@ -68,25 +68,77 @@ export class EventsService {
 
   async getStats(days = 7) {
     const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
+    startDate.setDate(startDate.getDate() - (days - 1));
+    startDate.setHours(0, 0, 0, 0);
+    // Group by hour for single day, by day for multi-day ranges
+    const bucketExpr = days <= 1
+      ? "strftime('%Y-%m-%d %H:00:00', e.timestamp)"
+      : "strftime('%Y-%m-%d', e.timestamp)";
     const raw = await this.repo.createQueryBuilder('e')
-      .select("strftime('%Y-%m-%d %H:00:00', e.timestamp)", 'hour')
+      .select(bucketExpr, 'bucket')
       .addSelect('COUNT(*)', 'count')
       .where('e.timestamp >= :start', { start: startDate })
-      .groupBy('hour')
-      .orderBy('hour', 'ASC')
+      .groupBy('bucket')
+      .orderBy('bucket', 'ASC')
       .getRawMany();
-    return raw.map(r => ({ time: r.hour, count: parseInt(r.count, 10) }));
+    return raw.map(r => ({ time: r.bucket, count: parseInt(r.count, 10) }));
   }
 
-  async getTopPlates(limit = 10) {
-    return this.repo.createQueryBuilder('e')
+  async getSummary(days = 7) {
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - (days - 1));
+    startDate.setHours(0, 0, 0, 0);
+    const [total, uniquePlatesRaw, avgConfRaw] = await Promise.all([
+      this.repo.createQueryBuilder('e')
+        .where('e.timestamp >= :start', { start: startDate })
+        .getCount(),
+      this.repo.createQueryBuilder('e')
+        .select('COUNT(DISTINCT e.plateText)', 'n')
+        .where('e.timestamp >= :start', { start: startDate })
+        .getRawOne(),
+      this.repo.createQueryBuilder('e')
+        .select('AVG(e.confidence)', 'avg')
+        .where('e.timestamp >= :start', { start: startDate })
+        .getRawOne(),
+    ]);
+    return {
+      total,
+      uniquePlates: parseInt(uniquePlatesRaw?.n ?? '0', 10),
+      avgConfidence: parseFloat(avgConfRaw?.avg ?? '0'),
+    };
+  }
+
+  async getTopPlates(limit = 10, days?: number) {
+    const qb = this.repo.createQueryBuilder('e')
       .select('e.plateText', 'plate')
       .addSelect('COUNT(*)', 'count')
       .groupBy('e.plateText')
       .orderBy('count', 'DESC')
-      .limit(limit)
-      .getRawMany();
+      .limit(limit);
+    if (days) {
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - (days - 1));
+      startDate.setHours(0, 0, 0, 0);
+      qb.where('e.timestamp >= :start', { start: startDate });
+    }
+    return qb.getRawMany();
+  }
+
+  async getTopCameras(limit = 10, days?: number) {
+    const qb = this.repo.createQueryBuilder('e')
+      .select('COALESCE(e.cameraName, e.cameraId)', 'camera')
+      .addSelect('COUNT(*)', 'count')
+      .where('e.cameraId IS NOT NULL')
+      .groupBy('camera')
+      .orderBy('count', 'DESC')
+      .limit(limit);
+    if (days) {
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - (days - 1));
+      startDate.setHours(0, 0, 0, 0);
+      qb.andWhere('e.timestamp >= :start', { start: startDate });
+    }
+    return qb.getRawMany();
   }
 
   async getTopPersons(limit = 10) {
