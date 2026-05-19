@@ -395,9 +395,19 @@ export class RocService implements OnModuleInit, OnModuleDestroy {
       let processedCount = 0;
       // Adaptive frameStep: tighten when a vehicle was detected in the last processed frame
       let adaptiveStep = baseFrameStep;
+      // Face detection every 3rd processed frame — faces change slowly, skipping saves ~500ms/frame
+      let faceFrameCounter = 0;
+      const FACE_FRAME_INTERVAL = 3;
 
       while (true) {
-        const frame = await roc.roc_read_frame(video);
+        let frame: any;
+        try {
+          frame = await roc.roc_read_frame(video);
+        } catch (err: any) {
+          // SDK throws "Null image data!" on last frame instead of returning null — treat as EOF
+          if (err?.message?.includes('Null image data')) break;
+          throw err;
+        }
         if (!frame || !frame.data) break;
 
         if (skipped < adaptiveStep - 1) {
@@ -408,14 +418,29 @@ export class RocService implements OnModuleInit, OnModuleDestroy {
         skipped = 0;
 
         const start = Date.now();
-
-        // Vehicle-first gate: only LPR/object detection needs vehicles
-        const vehiclePresent = await this.hasVehicle(frame);
-        adaptiveStep = vehiclePresent ? Math.max(2, Math.floor(baseFrameStep / 3)) : baseFrameStep;
+        const runFaceThisFrame = (faceFrameCounter % FACE_FRAME_INTERVAL === 0);
+        faceFrameCounter++;
 
         let plates: RawPlateResult[] = [];
         let vehicles: RawVehicleResult[] = [];
         let hasGun = false;
+        let faces: RawFaceResult[] = [];
+        let vehiclePresent = false;
+
+        if (runFaceThisFrame) {
+          // Run vehicle gate and face detection in parallel; LPR only when vehicle confirmed
+          let facesResult: RawFaceResult[];
+          [vehiclePresent, facesResult] = await Promise.all([
+            this.hasVehicle(frame),
+            this.runFace(frame),
+          ]);
+          faces = facesResult;
+        } else {
+          // Fast path: vehicle gate only, skip face detection this frame
+          vehiclePresent = await this.hasVehicle(frame);
+        }
+
+        adaptiveStep = vehiclePresent ? Math.max(2, Math.floor(baseFrameStep / 2)) : baseFrameStep;
 
         if (vehiclePresent) {
           [plates, vehicles, hasGun] = await Promise.all([
@@ -425,13 +450,16 @@ export class RocService implements OnModuleInit, OnModuleDestroy {
           ]);
         }
 
-        // Face detection always runs — persons on bikes/walking are not vehicles
-        const faces = await this.runFace(frame);
-
         processedCount++;
-        if (processedCount % 20 === 0) {
-          this.logger.log(`Frame #${frameIndex}: ${plates.length} plates, ${faces.length} faces, vehicle=${vehiclePresent}`);
-        }
+        const procMs = Date.now() - start;
+
+        // Per-frame log — always emitted so the pipeline is fully visible
+        const platesSummary = plates.length
+          ? plates.map(p => `"${p.text}" w=${p.boundingBox?.width ?? 0}px conf=${(p.confidence * 100).toFixed(0)}%`).join(', ')
+          : 'none';
+        this.logger.log(
+          `[FRAME #${frameIndex}] vehicle=${vehiclePresent} | plates=${plates.length} [${platesSummary}] | faces=${faces.length} | ${procMs}ms`,
+        );
 
         if (plates.length > 0 || faces.length > 0 || vehicles.length > 0 || hasGun) {
           yield {
@@ -441,7 +469,7 @@ export class RocService implements OnModuleInit, OnModuleDestroy {
             vehicles,
             hasVehicle: vehiclePresent,
             hasGun,
-            processingTimeMs: Date.now() - start,
+            processingTimeMs: procMs,
           };
         }
         frameIndex++;
@@ -472,16 +500,37 @@ export class RocService implements OnModuleInit, OnModuleDestroy {
       ignore_partial: options.ignorePartial ?? true,
     };
 
-    if (options.roiInclude?.length) {
-      params.roi_params = {
-        include: options.roiInclude,
-        exclude: options.roiExclude ?? [],
-        min_overlap: 0.5,
-      };
-    }
+    // NOTE: roi_params is intentionally NOT passed to the SDK — video frames from
+    // roc_read_frame may have non-contiguous stride, which crashes img2blob inside the SDK.
+    // Instead we filter by zone in post-processing after parsing the templates.
 
     const templates = await roc.roc_represent_lpr_ex(image, params);
-    return templates.map((t: any) => this.parseTemplate(t, options));
+    const plates = templates.map((t: any) => this.parseTemplate(t, options));
+
+    if (!options.roiInclude?.length) return plates;
+
+    // Post-filter: keep plates whose centre falls inside at least one include zone.
+    // Zones are stored as 0-1 normalized fractions; convert to pixels for comparison.
+    const fw: number = (image as any).width ?? 1920;
+    const fh: number = (image as any).height ?? 1080;
+    this.logger.log(`ROI post-filter: ${options.roiInclude.length} zone(s) on ${fw}×${fh} — ${plates.length} raw plate(s)`);
+
+    const filtered = plates.filter(p => {
+      const cx = p.boundingBox.x + p.boundingBox.width / 2;
+      const cy = p.boundingBox.y + p.boundingBox.height / 2;
+      const inInclude = options.roiInclude!.some(z => {
+        const zx = z.x * fw, zy = z.y * fh;
+        const zw = z.width * fw, zh = z.height * fh;
+        return cx >= zx && cx <= zx + zw && cy >= zy && cy <= zy + zh;
+      });
+      if (!inInclude) {
+        this.logger.log(`  ROI SKIP "${p.text}" centre=(${Math.round(cx)},${Math.round(cy)}) outside zone`);
+      }
+      return inInclude;
+    });
+
+    this.logger.log(`  ROI result: ${filtered.length}/${plates.length} plates inside zone(s)`);
+    return filtered;
   }
 
   private buildLprAlgorithmId(options: LprDetectOptions): number {

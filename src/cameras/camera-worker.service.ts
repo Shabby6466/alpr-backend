@@ -62,21 +62,46 @@ export class CameraWorkerService implements OnModuleInit, OnModuleDestroy {
       roiExclude: camera.roiExclude,
     };
 
-    while (this.running.has(camera.id)) {
-      try {
-        // detectLiveStream handles DB writes, SSE emissions, and watchlist checks internally
-        for await (const _ of this.alpr.detectLiveStream(camera.url, params as any, camera.id, camera.name)) {
-          if (!this.running.has(camera.id)) break;
-        }
-      } catch (err) {
-        if (!this.running.has(camera.id)) break;
-        this.logger.warn(`Camera "${camera.name}" stream error: ${err.message} — reconnecting in ${RECONNECT_DELAY_MS / 1000}s`);
-        await this.sleep(RECONNECT_DELAY_MS);
-      }
+    // Use on-disk test video when assigned; fall back to the configured stream URL
+    const source = camera.testVideoPath ?? camera.url;
+    const isTestVideo = !!camera.testVideoPath;
 
-      if (!this.running.has(camera.id)) break;
-      this.logger.log(`Camera "${camera.name}" stream ended — reconnecting...`);
-      await this.sleep(1_000);
+    if (isTestVideo) {
+      // Loop the file as one continuous tracking session — restart on unexpected errors
+      while (this.running.has(camera.id)) {
+        try {
+          for await (const _ of this.alpr.detectLoopingFile(
+            source, params as any, camera.id, camera.name,
+            () => this.running.has(camera.id),
+          )) {
+            // results are side-effected into DB/SSE inside detectLoopingFile
+          }
+        } catch (err: any) {
+          if (!this.running.has(camera.id)) break;
+          this.logger.warn(`Camera "${camera.name}" test-video error: ${err.message} — restarting in 2s`);
+          await this.sleep(2_000);
+          continue;
+        }
+        // detectLoopingFile exited cleanly (shouldContinue returned false)
+        break;
+      }
+    } else {
+      // Live RTSP stream: reconnect loop
+      while (this.running.has(camera.id)) {
+        try {
+          for await (const _ of this.alpr.detectLiveStream(source, params as any, camera.id, camera.name)) {
+            if (!this.running.has(camera.id)) break;
+          }
+        } catch (err: any) {
+          if (!this.running.has(camera.id)) break;
+          this.logger.warn(`Camera "${camera.name}" stream error: ${err.message} — reconnecting in ${RECONNECT_DELAY_MS / 1000}s`);
+          await this.sleep(RECONNECT_DELAY_MS);
+          continue;
+        }
+        if (!this.running.has(camera.id)) break;
+        this.logger.log(`Camera "${camera.name}" stream ended — reconnecting...`);
+        await this.sleep(1_000);
+      }
     }
 
     this.logger.log(`Worker stopped for camera "${camera.name}"`);

@@ -36,6 +36,10 @@ export class Camera {
   @Column({ type: 'simple-json', nullable: true })
   roiExclude?: { x: number; y: number; width: number; height: number }[];
 
+  // Absolute path to an on-disk test video — when set, the worker loops this file instead of `url`
+  @Column({ nullable: true })
+  testVideoPath?: string;
+
   @CreateDateColumn()
   createdAt: Date;
 }

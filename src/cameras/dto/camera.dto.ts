@@ -48,4 +48,5 @@ export class UpdateCameraDto {
   @ApiPropertyOptional() @IsOptional() @IsNumber() @Type(() => Number) lng?: number;
   @ApiPropertyOptional({ type: [RoiZoneDto] }) @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => RoiZoneDto) roiInclude?: RoiZoneDto[];
   @ApiPropertyOptional({ type: [RoiZoneDto] }) @IsOptional() @IsArray() @ValidateNested({ each: true }) @Type(() => RoiZoneDto) roiExclude?: RoiZoneDto[];
+  @ApiPropertyOptional() @IsOptional() @IsString() testVideoPath?: string;
 }

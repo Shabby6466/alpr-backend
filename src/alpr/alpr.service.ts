@@ -15,8 +15,8 @@ import { VehicleTracker } from '../common/vehicle-tracker';
 import * as https from 'https';
 import * as http from 'http';
 
-const MIN_PLATE_PX_WIDTH = 40;
-const PLATE_COOLDOWN_MS = 30_000;
+const MIN_PLATE_PX_WIDTH = 22;
+const PLATE_COOLDOWN_MS = 3_000;
 const SESSION_TTL_MS = 120_000; // auto-expire sessions idle for 2 minutes
 
 interface VideoSession {
@@ -29,8 +29,9 @@ interface VideoSession {
 @Injectable()
 export class AlprService implements OnModuleDestroy {
   private readonly logger = new Logger(AlprService.name);
-  // 8s idle window, edit distance ≤2, require ≥3 observations before committing
-  private readonly tracker = new PlateTracker(8_000, 2, 3);
+  // 8s idle window (for cleanup), edit distance ≤2, commit on first observation
+  // ROI zone + regex pre-filter already ensure quality; cooldown handles spam
+  private readonly tracker = new PlateTracker(8_000, 2, 1);
   private readonly recentlyLogged = new Map<string, number>();
   private readonly videoSessions = new Map<string, VideoSession>();
   // Plates already checked against watchlist per session — prevents per-frame alert flooding
@@ -45,7 +46,9 @@ export class AlprService implements OnModuleDestroy {
     private readonly faceEvents: FaceEventsService,
     private readonly journeys: JourneysService,
     private readonly config: ConfigService,
-  ) {}
+  ) {
+    this.tracker.setLogger(msg => this.logger.log(msg));
+  }
 
   onModuleDestroy() {
     for (const { timer } of this.videoSessions.values()) clearTimeout(timer);
@@ -236,6 +239,34 @@ export class AlprService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * Loops a video file continuously without flushing the PlateTracker between iterations.
+   * The tracker (and its idle-window logic) runs as one uninterrupted session across all loops.
+   * Only flushes when the generator is finally closed (worker stopped).
+   */
+  async *detectLoopingFile(
+    filePath: string,
+    params: DetectPlateDto,
+    cameraId: string,
+    cameraName: string,
+    shouldContinue: () => boolean,
+  ): AsyncGenerator<CombinedResultDto> {
+    const source = 'camera' as const;
+    try {
+      while (shouldContinue()) {
+        for await (const result of this.roc.detectStreamFrames(filePath, params, params.frameStep ?? 5)) {
+          if (!shouldContinue()) return;
+          yield* this.processCombinedFrame(result, source, cameraId, cameraName);
+        }
+        if (!shouldContinue()) break;
+        // Brief pause between loops — tracker state is preserved across this gap
+        await new Promise<void>(resolve => setTimeout(resolve, 200));
+      }
+    } finally {
+      await this.flushTracker(source, cameraId, cameraName);
+    }
+  }
+
   private async *processCombinedFrame(
     result: any,
     source: 'video' | 'stream' | 'camera',
@@ -259,10 +290,12 @@ export class AlprService implements OnModuleDestroy {
       this.logger.warn(`GUN DETECTED — camera: ${cameraName ?? 'manual'}, frame: ${result.frameIndex}`);
     }
 
-    // Feed plates into tracker; commit sessions that have been idle
+    // Feed plates into tracker; commit as soon as minObservations is reached
     for (const plate of plates) {
+      this.logger.log(`  TRACKER observe "${plate.text}" conf=${(plate.confidence * 100).toFixed(0)}%`);
       const committed = this.tracker.observe(plate);
       for (const winner of committed) {
+        this.logger.log(`  TRACKER committed "${winner.text}" conf=${(winner.confidence * 100).toFixed(0)}% → logCommitted`);
         await this.logCommitted(winner, source, cameraId, cameraName, result.hasGun);
       }
     }
@@ -317,11 +350,14 @@ export class AlprService implements OnModuleDestroy {
   ) {
     const now = Date.now();
     // Cooldown is per plate+camera — same plate at a different camera always logs
-    // (cross-camera hop must not be suppressed by the cooldown)
     const cooldownKey = `${plate.text}:${cameraId ?? ''}`;
     const last = this.recentlyLogged.get(cooldownKey);
-    if (last !== undefined && now - last < PLATE_COOLDOWN_MS) return;
+    if (last !== undefined && now - last < PLATE_COOLDOWN_MS) {
+      this.logger.log(`  COOLDOWN BLOCKED "${plate.text}" (${((now - last) / 1000).toFixed(1)}s < ${PLATE_COOLDOWN_MS / 1000}s cooldown)`);
+      return;
+    }
 
+    this.logger.log(`  DB WRITE "${plate.text}" conf=${(plate.confidence * 100).toFixed(0)}% src=${source} cam=${cameraName ?? cameraId ?? '-'}`);
     this.recentlyLogged.set(cooldownKey, now);
     if (this.recentlyLogged.size > 500) {
       for (const [k, t] of this.recentlyLogged) {
@@ -340,28 +376,23 @@ export class AlprService implements OnModuleDestroy {
     const ratio = w / h;
 
     if (w < MIN_PLATE_PX_WIDTH) {
-      this.logger.debug(`SKIP [too narrow] "${text}" w=${w}px`);
+      this.logger.log(`  PREFILTER SKIP [too narrow] "${text}" w=${w}px (min=${MIN_PLATE_PX_WIDTH})`);
       return false;
     }
     if (conf < 0.65) {
-      this.logger.debug(`SKIP [low confidence] "${text}" conf=${conf.toFixed(2)}`);
+      this.logger.log(`  PREFILTER SKIP [low conf] "${text}" conf=${(conf * 100).toFixed(0)}% (min=65%)`);
       return false;
     }
-    // Block portrait shapes (badges, logos). Threshold 1.1 allows:
-    //  - New-format Pakistani green plates (two-line stacked, ~1.0–1.3 ratio)
-    //  - Motorcycle plates (narrow, ~1.2–1.5 ratio)
-    //  - Angled shots of standard plates
-    // Pakistani regex is the primary false-positive gate; aspect ratio just blocks
-    // clearly-portrait shapes that can't be plates.
     if (ratio < 1.1) {
-      this.logger.debug(`SKIP [portrait] "${text}" w/h=${ratio.toFixed(2)}`);
+      this.logger.log(`  PREFILTER SKIP [portrait] "${text}" w/h=${ratio.toFixed(2)} (min=1.1)`);
       return false;
     }
     const normalized = normalizePlate(text);
     if (!isValidPakistaniPlate(normalized)) {
-      this.logger.debug(`SKIP [regex] "${text}" → "${normalized}"`);
+      this.logger.log(`  PREFILTER SKIP [regex] "${text}" → "${normalized}"`);
       return false;
     }
+    this.logger.log(`  PREFILTER PASS "${normalized}" w=${w}px conf=${(conf * 100).toFixed(0)}% ratio=${ratio.toFixed(2)}`);
     return true;
   }
 

@@ -82,6 +82,9 @@ function spatiallyClose(plate: PlateDto, session: Session): boolean {
  */
 export class PlateTracker {
   private readonly sessions = new Map<string, Session>();
+  private log: (msg: string) => void = () => {};
+
+  setLogger(fn: (msg: string) => void) { this.log = fn; }
 
   constructor(
     private readonly commitAfterMs = 5_000,
@@ -96,17 +99,20 @@ export class PlateTracker {
     const cy = centroidY(plate);
 
     let matched: Session | undefined;
-    for (const session of this.sessions.values()) {
+    let matchedKey: string | undefined;
+    for (const [k, session] of this.sessions) {
       if (
         levenshtein(plate.text, session.anchorText) <= this.maxEditDistance ||
         spatiallyClose(plate, session)
       ) {
         matched = session;
+        matchedKey = k;
         break;
       }
     }
 
     if (!matched) {
+      const key = plate.text + '_' + now;
       matched = {
         anchorText: plate.text,
         votes: new Map(),
@@ -118,12 +124,15 @@ export class PlateTracker {
         lastWidth: plate.boundingBox.width,
         lastHeight: plate.boundingBox.height,
       };
-      this.sessions.set(plate.text + '_' + now, matched);
+      this.sessions.set(key, matched);
+      matchedKey = key;
+      this.log(`    [TRACKER NEW session] "${plate.text}" (need ${this.minObservations} obs)`);
     } else {
       matched.lastCentroidX = cx;
       matched.lastCentroidY = cy;
       matched.lastWidth = plate.boundingBox.width;
       matched.lastHeight = plate.boundingBox.height;
+      this.log(`    [TRACKER UPDATE] "${plate.text}" obs=${matched.totalVotes + 1}/${this.minObservations}`);
     }
 
     const existing = matched.votes.get(plate.text);
@@ -135,6 +144,16 @@ export class PlateTracker {
     }
     matched.totalVotes++;
     matched.lastSeen = now;
+
+    // Commit as soon as minObservations is reached — don't wait for idle.
+    // The session is removed immediately so the next pass starts a fresh one.
+    // logCommitted's cooldown gate handles re-logging rate-limiting.
+    if (matched.totalVotes >= this.minObservations) {
+      const winner = this.pickWinner(matched);
+      this.log(`    [TRACKER COMMIT] "${winner.text}" after ${matched.totalVotes} obs → sending to logCommitted`);
+      committed.push(winner);
+      this.sessions.delete(matchedKey!);
+    }
 
     return committed;
   }
@@ -156,6 +175,9 @@ export class PlateTracker {
       if (now - session.lastSeen >= this.commitAfterMs) {
         if (session.totalVotes >= this.minObservations) {
           results.push(this.pickWinner(session));
+          this.log(`    [TRACKER EXPIRED COMMIT] "${session.anchorText}" obs=${session.totalVotes} idle>${this.commitAfterMs}ms`);
+        } else {
+          this.log(`    [TRACKER EXPIRED DROP] "${session.anchorText}" only ${session.totalVotes} obs (need ${this.minObservations}) — dropped`);
         }
         this.sessions.delete(key);
       }
