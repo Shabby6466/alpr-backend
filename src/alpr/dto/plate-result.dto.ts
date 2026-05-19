@@ -12,6 +12,8 @@ export class VehicleDto {
   @ApiPropertyOptional() make?: string;
   @ApiPropertyOptional() model?: string;
   @ApiPropertyOptional() color?: string;
+  @ApiPropertyOptional() type?: string;
+  @ApiPropertyOptional() view?: string;
   @ApiPropertyOptional() thumbnail?: string;
   @ApiProperty() confidence: number;
   @ApiProperty() boundingBox: BoundingBoxDto;

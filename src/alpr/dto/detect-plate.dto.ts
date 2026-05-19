@@ -65,6 +65,14 @@ export class DetectPlateDto {
   @ApiPropertyOptional({ description: 'Video session ID — groups frames for per-vehicle deduplication; flush with POST /api/alpr/sessions/:id/flush' })
   @IsOptional() @IsString()
   sessionId?: string;
+
+  @ApiPropertyOptional({ description: 'Camera ID — when set, events are attributed to this camera (GPS, journey tracking, source=camera)' })
+  @IsOptional() @IsString()
+  cameraId?: string;
+
+  @ApiPropertyOptional({ description: 'Camera display name (used alongside cameraId)' })
+  @IsOptional() @IsString()
+  cameraName?: string;
 }
 
 export class DetectPlateFromUrlDto extends DetectPlateDto {

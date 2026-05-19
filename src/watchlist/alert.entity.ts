@@ -11,8 +11,8 @@ export class Alert {
   @Column()
   watchlistEntryId: string;
 
-  @Column()
-  detectionEventId: string;
+  @Column({ nullable: true })
+  detectionEventId?: string;
 
   @Column({ nullable: true })
   reason?: string;

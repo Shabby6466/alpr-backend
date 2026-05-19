@@ -51,6 +51,8 @@ export interface RawVehicleResult {
   make?: string;
   model?: string;
   color?: string;
+  type?: string;
+  view?: string;
   confidence: number;
   boundingBox: { x: number; y: number; width: number; height: number; rotation: number };
   thumbnail?: string;
@@ -526,6 +528,8 @@ export class RocService implements OnModuleInit, OnModuleDestroy {
       make: roc.roc_get_metadata(t, 'Make') ?? roc.roc_get_metadata(t, 'VehicleMake') ?? undefined,
       model: roc.roc_get_metadata(t, 'Model') ?? roc.roc_get_metadata(t, 'VehicleModel') ?? undefined,
       color: roc.roc_get_metadata(t, 'Color') ?? roc.roc_get_metadata(t, 'VehicleColor') ?? undefined,
+      type: roc.roc_get_metadata(t, 'VehicleType') ?? roc.roc_get_metadata(t, 'Type') ?? roc.roc_get_metadata(t, 'Class') ?? undefined,
+      view: roc.roc_get_metadata(t, 'View') ?? roc.roc_get_metadata(t, 'Angle') ?? roc.roc_get_metadata(t, 'VehicleView') ?? undefined,
       confidence: box.confidence ?? 0,
       boundingBox: { x: box.x ?? 0, y: box.y ?? 0, width: box.width ?? 0, height: box.height ?? 0, rotation: box.rotation ?? 0 },
       thumbnail: t.tn?.length > 0 ? Buffer.from(t.tn).toString('base64') : undefined,

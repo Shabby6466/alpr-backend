@@ -43,10 +43,33 @@ export class WatchlistService {
     return this.watchlistRepo.remove(entry);
   }
 
-  async checkAndAlert(plateText: string, detectionEventId: string, thumbnailBase64?: string): Promise<Alert | null> {
+  async checkAndAlert(
+    plateText: string,
+    detectionEventId?: string,
+    thumbnailBase64?: string,
+  ): Promise<Alert | null> {
     const normalized = normalizePlate(plateText);
     const entry = await this.watchlistRepo.findOne({ where: { plateText: normalized, active: true } });
     if (!entry) return null;
+
+    // Deduplicate: if an unacknowledged alert for this plate already exists within the last 5 minutes,
+    // update it with the real detectionEventId (if we now have one) and re-emit rather than creating a duplicate.
+    const cutoff = new Date(Date.now() - 5 * 60 * 1000);
+    const recent = await this.alertRepo.findOne({
+      where: { plateText: normalized, acknowledged: false },
+      order: { timestamp: 'DESC' },
+    });
+    if (recent && recent.timestamp > cutoff) {
+      if (detectionEventId && !recent.detectionEventId) {
+        recent.detectionEventId = detectionEventId;
+        const updated = await this.alertRepo.save(recent);
+        this.notifications.emitAlert(updated);
+        return updated;
+      }
+      // Already has an event ID or no new ID — re-emit for any missed SSE listeners
+      this.notifications.emitAlert(recent);
+      return recent;
+    }
 
     const alert = this.alertRepo.create({
       plateText: normalized,

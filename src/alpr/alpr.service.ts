@@ -22,6 +22,8 @@ const SESSION_TTL_MS = 120_000; // auto-expire sessions idle for 2 minutes
 interface VideoSession {
   tracker: VehicleTracker;
   timer: ReturnType<typeof setTimeout>;
+  cameraId?: string;
+  cameraName?: string;
 }
 
 @Injectable()
@@ -31,6 +33,8 @@ export class AlprService implements OnModuleDestroy {
   private readonly tracker = new PlateTracker(8_000, 2, 3);
   private readonly recentlyLogged = new Map<string, number>();
   private readonly videoSessions = new Map<string, VideoSession>();
+  // Plates already checked against watchlist per session — prevents per-frame alert flooding
+  private readonly sessionWatchlistChecked = new Map<string, Set<string>>();
 
   constructor(
     private readonly roc: RocService,
@@ -50,7 +54,7 @@ export class AlprService implements OnModuleDestroy {
 
   // ── Video session management ────────────────────────────────────────────────
 
-  private getOrCreateSession(sessionId: string): VehicleTracker {
+  private getOrCreateSession(sessionId: string, cameraId?: string, cameraName?: string): VehicleTracker {
     const existing = this.videoSessions.get(sessionId);
     if (existing) {
       clearTimeout(existing.timer);
@@ -59,7 +63,7 @@ export class AlprService implements OnModuleDestroy {
     }
     const tracker = new VehicleTracker(8_000, 1);
     const timer = setTimeout(() => this.expireSession(sessionId), SESSION_TTL_MS);
-    this.videoSessions.set(sessionId, { tracker, timer });
+    this.videoSessions.set(sessionId, { tracker, timer, cameraId, cameraName });
     return tracker;
   }
 
@@ -67,6 +71,7 @@ export class AlprService implements OnModuleDestroy {
     const session = this.videoSessions.get(sessionId);
     if (!session) return;
     this.videoSessions.delete(sessionId);
+    this.sessionWatchlistChecked.delete(sessionId);
     clearTimeout(session.timer);
     for (const plate of session.tracker.flushAll()) {
       await this.logAndAlert(plate, 'video');
@@ -79,12 +84,15 @@ export class AlprService implements OnModuleDestroy {
     const session = this.videoSessions.get(sessionId);
     if (!session) return [];
     this.videoSessions.delete(sessionId);
+    this.sessionWatchlistChecked.delete(sessionId);
     clearTimeout(session.timer);
+    const { cameraId, cameraName } = session;
+    const source = cameraId ? 'camera' : 'video';
     const plates = session.tracker.flushAll();
     for (const plate of plates) {
-      await this.logAndAlert(plate, 'video');
+      await this.logAndAlert(plate, source, cameraId, cameraName);
     }
-    this.logger.log(`Session ${sessionId} flushed — ${plates.length} vehicle(s) committed`);
+    this.logger.log(`Session ${sessionId} flushed — ${plates.length} vehicle(s) committed${cameraId ? ` [camera: ${cameraName ?? cameraId}]` : ''}`);
     return plates;
   }
 
@@ -103,6 +111,7 @@ export class AlprService implements OnModuleDestroy {
       // Session mode: accumulate into tracker, don't log yet
       return this.processIntoSession(
         params.sessionId, platesRaw, facesRaw, vehiclesRaw, hasGun, Date.now() - start,
+        params.cameraId, params.cameraName,
       );
     }
     return this.processAndLog(platesRaw, facesRaw, vehiclesRaw, hasGun, 'image', Date.now() - start);
@@ -112,6 +121,7 @@ export class AlprService implements OnModuleDestroy {
     sessionId: string,
     rawPlates: any[], rawFaces: any[], rawVehicles: any[],
     hasGun: boolean, processingTimeMs: number,
+    cameraId?: string, cameraName?: string,
   ): Promise<AlprResultDto> {
     const [plates, faces, vehicles] = await Promise.all([
       this.enrichPlates(rawPlates, rawVehicles),
@@ -125,9 +135,23 @@ export class AlprService implements OnModuleDestroy {
       this.passesPreFilters({ text: p.text, boundingBox: p.boundingBox, confidence: p.confidence }),
     );
 
-    const tracker = this.getOrCreateSession(sessionId);
+    const tracker = this.getOrCreateSession(sessionId, cameraId, cameraName);
+
+    // One-time watchlist check per plate per session — fires the moment a watched plate
+    // is first seen in any frame, without waiting for the session flush.
+    let sessionChecked = this.sessionWatchlistChecked.get(sessionId);
+    if (!sessionChecked) {
+      sessionChecked = new Set<string>();
+      this.sessionWatchlistChecked.set(sessionId, sessionChecked);
+    }
     for (const plate of validPlates) {
       tracker.observe(plate);
+      if (!sessionChecked.has(plate.text)) {
+        sessionChecked.add(plate.text);
+        // No detectionEventId yet — it will be linked at flush time via checkAndAlert deduplication
+        this.watchlistService.checkAndAlert(plate.text, undefined, plate.thumbnail)
+          .catch(err => this.logger.warn(`Session watchlist check failed: ${err.message}`));
+      }
     }
 
     // Return only valid plates — feed and overlay show the same set that enters the tracker
@@ -411,6 +435,8 @@ export class AlprService implements OnModuleDestroy {
       make: v.make,
       model: v.model,
       color: v.color,
+      type: v.type,
+      view: v.view,
       confidence: v.confidence,
       boundingBox: v.boundingBox,
       thumbnail: v.thumbnail,
