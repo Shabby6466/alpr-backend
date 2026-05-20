@@ -317,7 +317,8 @@ export class AlprService implements OnModuleDestroy {
           y: face.boundingBox?.y ?? 0,
           width: face.boundingBox?.width ?? 0,
           height: face.boundingBox?.height ?? 0,
-        }).catch(err => this.logger.warn(`FaceEvent save failed: ${err.message}`));
+        }).then(saved => this.notifications.emitFaceEvent(saved))
+          .catch(err => this.logger.warn(`FaceEvent save failed: ${err.message}`));
       }
     }
 
@@ -446,7 +447,8 @@ export class AlprService implements OnModuleDestroy {
           y: face.boundingBox?.y ?? 0,
           width: face.boundingBox?.width ?? 0,
           height: face.boundingBox?.height ?? 0,
-        }).catch(err => this.logger.warn(`FaceEvent save failed: ${err.message}`));
+        }).then(saved => this.notifications.emitFaceEvent(saved))
+          .catch(err => this.logger.warn(`FaceEvent save failed: ${err.message}`));
       }
     }
 

@@ -20,6 +20,13 @@ export class Alert {
   @Column({ nullable: true, type: 'text' })
   thumbnailBase64?: string;
 
+  // Person linked to this plate (if enrolled in persons list)
+  @Column({ nullable: true })
+  personName?: string;
+
+  @Column({ nullable: true, type: 'text' })
+  personFaceThumbnail?: string;
+
   @Column({ default: false })
   acknowledged: boolean;
 

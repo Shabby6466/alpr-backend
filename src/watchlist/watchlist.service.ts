@@ -6,6 +6,7 @@ import { Alert } from './alert.entity';
 import { CreateWatchlistDto, UpdateWatchlistDto } from './dto/watchlist.dto';
 import { normalizePlate } from '../common/plate.util';
 import { NotificationsService } from '../notifications/notifications.service';
+import { PersonsService } from '../persons/persons.service';
 
 @Injectable()
 export class WatchlistService {
@@ -15,6 +16,7 @@ export class WatchlistService {
     @InjectRepository(Alert)
     private readonly alertRepo: Repository<Alert>,
     private readonly notifications: NotificationsService,
+    private readonly persons: PersonsService,
   ) {}
 
   async create(dto: CreateWatchlistDto): Promise<WatchlistEntry> {
@@ -71,12 +73,17 @@ export class WatchlistService {
       return recent;
     }
 
+    // Look up associated person for this plate
+    const person = await this.persons.findByPlate(normalized).catch(() => null);
+
     const alert = this.alertRepo.create({
       plateText: normalized,
       watchlistEntryId: entry.id,
       detectionEventId,
       reason: entry.reason,
       thumbnailBase64,
+      personName: person?.name,
+      personFaceThumbnail: person?.faceThumbnail,
     });
     const saved = await this.alertRepo.save(alert);
     this.notifications.emitAlert(saved);

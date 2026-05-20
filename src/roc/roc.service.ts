@@ -622,7 +622,7 @@ export class RocService implements OnModuleInit, OnModuleDestroy {
       // Extract spoof score from template metadata; convention may vary by SDK version
       const spoofRaw = roc.roc_get_metadata(t, 'SpoofScore') ?? roc.roc_get_metadata(t, 'Spoof');
       const spoofScore = spoofRaw != null ? parseFloat(spoofRaw) : undefined;
-      const SPOOF_THRESHOLD = 0.5;
+      const SPOOF_THRESHOLD = 0.85;
       const spoofDetected = spoofScore != null ? spoofScore > SPOOF_THRESHOLD : undefined;
       // Helmet/occlusion heuristic: face quality below 0.05 after detection
       const occluded = (t.quality ?? 0) < 0.05;
@@ -636,8 +636,8 @@ export class RocService implements OnModuleInit, OnModuleDestroy {
         boundingBox: { x: box.x ?? 0, y: box.y ?? 0, width: box.width ?? 0, height: box.height ?? 0, rotation: box.rotation ?? 0 },
         thumbnail: t.tn?.length > 0 ? Buffer.from(t.tn).toString('base64') : undefined,
         template: t.template || t.fv,
-        // Don't match if spoof detected — prevent photo-in-front-of-camera attacks
-        personId: (!spoofDetected && best?.similarity > 0.5)
+        // Always return the identity if they match, even if it's a spoof (so we know WHO is spoofing)
+        personId: (best?.similarity > 0.4)
           ? roc.roc_uuid_to_string(best.person_id, false)
           : undefined,
         similarity: best?.similarity,

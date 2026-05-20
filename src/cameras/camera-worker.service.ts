@@ -8,7 +8,8 @@ const RECONNECT_DELAY_MS = 5_000;
 @Injectable()
 export class CameraWorkerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(CameraWorkerService.name);
-  private readonly running = new Map<string, boolean>();
+  private readonly running = new Map<string, number>();
+  private nextWorkerId = 1;
 
   constructor(
     private readonly cameras: CamerasService,
@@ -34,15 +35,18 @@ export class CameraWorkerService implements OnModuleInit, OnModuleDestroy {
 
   startWorker(camera: Camera) {
     if (this.running.has(camera.id)) return;
-    this.running.set(camera.id, true);
-    this.runLoop(camera).catch(err => {
+    const workerId = this.nextWorkerId++;
+    this.running.set(camera.id, workerId);
+    this.runLoop(camera, workerId).catch(err => {
       this.logger.error(`Worker for camera "${camera.name}" crashed: ${err.message}`);
-      this.running.delete(camera.id);
+      if (this.running.get(camera.id) === workerId) {
+        this.running.delete(camera.id);
+      }
     });
   }
 
   stopWorker(id: string) {
-    this.running.set(id, false); // signal the loop to exit
+    // Delete the ID so any active loop will see a mismatch and exit
     this.running.delete(id);
   }
 
@@ -50,7 +54,7 @@ export class CameraWorkerService implements OnModuleInit, OnModuleDestroy {
     return this.running.has(id);
   }
 
-  private async runLoop(camera: Camera) {
+  private async runLoop(camera: Camera, workerId: number) {
     this.logger.log(`Worker started for camera "${camera.name}" (${camera.url})`);
 
     const params = {
@@ -68,16 +72,16 @@ export class CameraWorkerService implements OnModuleInit, OnModuleDestroy {
 
     if (isTestVideo) {
       // Loop the file as one continuous tracking session — restart on unexpected errors
-      while (this.running.has(camera.id)) {
+      while (this.running.get(camera.id) === workerId) {
         try {
           for await (const _ of this.alpr.detectLoopingFile(
             source, params as any, camera.id, camera.name,
-            () => this.running.has(camera.id),
+            () => this.running.get(camera.id) === workerId,
           )) {
             // results are side-effected into DB/SSE inside detectLoopingFile
           }
         } catch (err: any) {
-          if (!this.running.has(camera.id)) break;
+          if (this.running.get(camera.id) !== workerId) break;
           this.logger.warn(`Camera "${camera.name}" test-video error: ${err.message} — restarting in 2s`);
           await this.sleep(2_000);
           continue;
@@ -87,18 +91,18 @@ export class CameraWorkerService implements OnModuleInit, OnModuleDestroy {
       }
     } else {
       // Live RTSP stream: reconnect loop
-      while (this.running.has(camera.id)) {
+      while (this.running.get(camera.id) === workerId) {
         try {
           for await (const _ of this.alpr.detectLiveStream(source, params as any, camera.id, camera.name)) {
-            if (!this.running.has(camera.id)) break;
+            if (this.running.get(camera.id) !== workerId) break;
           }
         } catch (err: any) {
-          if (!this.running.has(camera.id)) break;
+          if (this.running.get(camera.id) !== workerId) break;
           this.logger.warn(`Camera "${camera.name}" stream error: ${err.message} — reconnecting in ${RECONNECT_DELAY_MS / 1000}s`);
           await this.sleep(RECONNECT_DELAY_MS);
           continue;
         }
-        if (!this.running.has(camera.id)) break;
+        if (this.running.get(camera.id) !== workerId) break;
         this.logger.log(`Camera "${camera.name}" stream ended — reconnecting...`);
         await this.sleep(1_000);
       }
